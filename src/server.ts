@@ -9,7 +9,7 @@ import { generateDataSetsInChunks } from "./utils/generateDatasets";
 dotenv.config();
 
 const app = express();
-const port = 8080;
+const port = 8000;
 
 app.use(express.json());
 

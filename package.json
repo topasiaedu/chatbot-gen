@@ -1,0 +1,37 @@
+{
+  "name": "chatbot-gen",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "dev": "nodemon --exec ts-node src/server.ts",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "supabase-sync": "npx supabase gen types typescript --project-id ldemovdvrlzrneitmwez > src/database.types.ts"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^22.5.5",
+    "@types/pdf-parse": "^1.1.4",
+    "@types/textract": "^2.4.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.2"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.4",
+    "@types/express": "^4.17.21",
+    "axios": "^1.7.7",
+    "chatbot-gen": "file:",
+    "cheerio": "^1.0.0",
+    "csv-parser": "^3.0.0",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.0",
+    "gpt-3-encoder": "^1.1.4",
+    "mammoth": "^1.8.0",
+    "nodemon": "^3.1.5",
+    "openai": "^4.62.1",
+    "pdf-parse": "^1.1.1",
+    "textract": "^2.5.0"
+  }
+}

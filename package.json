@@ -8,8 +8,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "supabase-sync": "npx supabase gen types typescript --project-id ldemovdvrlzrneitmwez > src/database.types.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
-    "update-server": "git pull && tsc && pm2 restart ibt-server && pm2 logs"
+    "start": "node src/server.js",
+    "update-server": "git pull && tsc && pm2 restart chatbot-gen && pm2 logs"
   },
   "keywords": [],
   "author": "",

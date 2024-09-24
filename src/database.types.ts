@@ -14,6 +14,7 @@ export type Database = {
           bot_id: string
           created_at: string
           dataset: string | null
+          file_name: string
           file_url: string
           id: string
         }
@@ -21,6 +22,7 @@ export type Database = {
           bot_id: string
           created_at?: string
           dataset?: string | null
+          file_name: string
           file_url: string
           id?: string
         }
@@ -28,6 +30,7 @@ export type Database = {
           bot_id?: string
           created_at?: string
           dataset?: string | null
+          file_name?: string
           file_url?: string
           id?: string
         }
@@ -43,45 +46,79 @@ export type Database = {
       }
       bot_models: {
         Row: {
+          bot_id: string | null
           created_at: string
           id: string
           open_ai_id: string
           version: string
         }
         Insert: {
+          bot_id?: string | null
           created_at?: string
           id?: string
           open_ai_id: string
           version: string
         }
         Update: {
+          bot_id?: string | null
           created_at?: string
           id?: string
           open_ai_id?: string
           version?: string
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "bot_models_bot_id_fkey"
+            columns: ["bot_id"]
+            isOneToOne: false
+            referencedRelation: "bots"
+            referencedColumns: ["id"]
+          },
+        ]
       }
       bots: {
         Row: {
+          active_version: string | null
           created_at: string
           description: string | null
           id: string
           name: string
+          progress: number | null
+          status: string | null
+          training_breadth: number
+          training_depth: number
         }
         Insert: {
+          active_version?: string | null
           created_at?: string
           description?: string | null
           id?: string
           name: string
+          progress?: number | null
+          status?: string | null
+          training_breadth?: number
+          training_depth?: number
         }
         Update: {
+          active_version?: string | null
           created_at?: string
           description?: string | null
           id?: string
           name?: string
+          progress?: number | null
+          status?: string | null
+          training_breadth?: number
+          training_depth?: number
         }
-        Relationships: []
+        Relationships: [
+          {
+            foreignKeyName: "bots_active_version_fkey"
+            columns: ["active_version"]
+            isOneToOne: false
+            referencedRelation: "bot_models"
+            referencedColumns: ["id"]
+          },
+        ]
       }
     }
     Views: {

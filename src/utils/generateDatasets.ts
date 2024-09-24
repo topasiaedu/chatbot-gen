@@ -8,10 +8,12 @@ function writeJSONLToFile(jsonArray: any[], filePath: string) {
     .map((entry: any) => JSON.stringify(entry)) // Convert each object to a JSON string
     .join("\n"); // Join them with newlines to form valid JSONL
 
-  // Write the JSONL data to a file
-  fs.writeFileSync(filePath, jsonlData, "utf8");
-}
+  // Append the JSONL data to the file instead of overwriting it
+  fs.appendFileSync(filePath, jsonlData + "\n", "utf8");
 
+  // Write the JSONL data to a file
+  // fs.writeFileSync(filePath, jsonlData, "utf8");
+}
 // Helper function to convert the returned string into JSONL format
 function convertToJSON(responseString: string): {
   prompt: string;
@@ -110,7 +112,7 @@ function convertToJSONL(responseString: string): string {
 // Helper function to split text into chunks of 1,000 tokens
 function splitTextIntoChunks(
   text: string,
-  tokensPerChunk: number = 2000
+  tokensPerChunk: number = 1000
 ): string[] {
   const encoded = encode(text); // Encode the text into tokens
   const chunks = [];
@@ -134,13 +136,13 @@ function decodeTokens(tokens: number[]): string {
 async function generateDataForChunk(
   client: OpenAI,
   textChunk: string,
-  summary: string
+  summary: string,
+  maxIterations: number = 1
 ): Promise<string> {
   let allDataSets = "";
   let remainingText = textChunk;
   let previousData = "";
   let iterationCount = 0;
-  const maxIterations = 1; // Set a limit for how many times to iterate on the same chunk
 
   while (remainingText.trim() && iterationCount < maxIterations) {
     const remainingTokens = encode(remainingText).length;
@@ -219,11 +221,13 @@ async function generateDataForChunk(
 // Main function to process the document by splitting it into chunks
 export async function generateDataSetsInChunks(
   client: OpenAI,
-  fileUrl: string
+  fileUrl: string,
+  trainingBreadth: number = 1000,
+  trainingDepth: number = 1
 ): Promise<string> {
   const extractedText = await extractTextFromFileUrl(fileUrl); // Extract full document text
   console.log("Extracted text length:", extractedText.length);
-  const textChunks = splitTextIntoChunks(extractedText); // Split the text into 1k token chunks
+  const textChunks = splitTextIntoChunks(extractedText, trainingBreadth); // Split the text into 1k token chunks
   console.log("Total chunks:", textChunks.length);
   let allDataSets = "";
 
@@ -253,7 +257,7 @@ export async function generateDataSetsInChunks(
 
   for (const chunk of textChunks) {
     console.log("Processing chunk:", chunk.length);
-    const chunkData = await generateDataForChunk(client, chunk, classification); // Process each chunk
+    const chunkData = await generateDataForChunk(client, chunk, classification, trainingDepth); // Process each chunk
     allDataSets += chunkData; // Collect all generated data
     console.log("Total data length:", allDataSets.length);
   }

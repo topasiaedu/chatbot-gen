@@ -51,3 +51,14 @@ export const deleteBotFile = async (fileId: number): Promise<void> => {
   if (error)
     throw new Error(`Failed to delete bot file with ID ${fileId}: ${error.message}`);
 };
+
+export const fetchBotFilesByBotId = async (botId: string): Promise<BotFile[]> => {
+  const { data, error } = await supabase
+    .from("bot_files")
+    .select("*")
+    .eq("bot_id", botId);
+
+  if (error)
+    throw new Error(`Failed to fetch bot files for bot ID ${botId}: ${error.message}`);
+  return data as BotFile[];
+}

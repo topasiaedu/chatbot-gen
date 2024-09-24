@@ -2,11 +2,13 @@ import { Database } from "../database.types";
 import supabase from "./supabaseClient";
 
 export type BotModel = Database["public"]["Tables"]["bot_models"]["Row"];
-export type BotModelInsert = Database["public"]["Tables"]["bot_models"]["Insert"];
-export type BotModelUpdate = Database["public"]["Tables"]["bot_models"]["Update"];
+export type BotModelInsert =
+  Database["public"]["Tables"]["bot_models"]["Insert"];
+export type BotModelUpdate =
+  Database["public"]["Tables"]["bot_models"]["Update"];
 
 // CRUD operations for bot models
-export const fetchBotModel = async (modelId: number): Promise<BotModel> => {
+export const fetchBotModel = async (modelId: string): Promise<BotModel> => {
   const { data, error } = await supabase
     .from("bot_models")
     .select("*")
@@ -14,11 +16,15 @@ export const fetchBotModel = async (modelId: number): Promise<BotModel> => {
     .single();
 
   if (error)
-    throw new Error(`Failed to fetch bot model with ID ${modelId}: ${error.message}`);
+    throw new Error(
+      `Failed to fetch bot model with ID ${modelId}: ${error.message}`
+    );
   return data as BotModel;
 };
 
-export const createBotModel = async (model: BotModelInsert): Promise<BotModel> => {
+export const createBotModel = async (
+  model: BotModelInsert
+): Promise<BotModel> => {
   const { data, error } = await supabase
     .from("bot_models")
     .insert([model])
@@ -41,13 +47,36 @@ export const updateBotModel = async (
     .single();
 
   if (error)
-    throw new Error(`Failed to update bot model with ID ${modelId}: ${error.message}`);
+    throw new Error(
+      `Failed to update bot model with ID ${modelId}: ${error.message}`
+    );
   return data as BotModel;
 };
 
 export const deleteBotModel = async (modelId: number): Promise<void> => {
-  const { error } = await supabase.from("bot_models").delete().eq("id", modelId);
+  const { error } = await supabase
+    .from("bot_models")
+    .delete()
+    .eq("id", modelId);
 
   if (error)
-    throw new Error(`Failed to delete bot model with ID ${modelId}: ${error.message}`);
+    throw new Error(
+      `Failed to delete bot model with ID ${modelId}: ${error.message}`
+    );
 };
+
+export const fetchBotModelCountByBotId = async (
+  botId: string
+): Promise<number> => {
+  const { data, error } = await supabase
+    .from("bot_models")
+    .select("id")
+    .eq("bot_id", botId);
+
+  if (error)
+    throw new Error(
+      `Failed to fetch bot models for bot with ID ${botId}: ${error.message}`
+    );
+  return data.length;
+};
+

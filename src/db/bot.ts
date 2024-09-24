@@ -30,7 +30,7 @@ export const createBot = async (bot: BotInsert): Promise<Bot> => {
 };
 
 export const updateBot = async (
-  botId: number,
+  botId: string,
   bot: BotUpdate
 ): Promise<Bot> => {
   const { data, error } = await supabase

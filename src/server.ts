@@ -201,6 +201,7 @@ app.post("/chat-with-bot", async (req, res) => {
     client,
     botModel.open_ai_id,
     prompt,
+    bot.description,
     messages
   );
   res.json({ completion });

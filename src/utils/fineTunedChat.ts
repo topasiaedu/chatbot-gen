@@ -4,6 +4,7 @@ export async function getFineTunedChat(
   client: OpenAI,
   modelId: string,
   prompt: string,
+  description?: string | null,
   messages?: any[]
 ) {
   if (!client) {
@@ -34,7 +35,7 @@ export async function getFineTunedChat(
     messages: [
       {
         role: "system",
-        content: "You are a helpful assistant.",
+        content: description || "You are a helpful assistant.",
       },
       ...messagesPayload,
       {

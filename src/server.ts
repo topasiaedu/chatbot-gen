@@ -167,7 +167,7 @@ app.post("/train-bot", async (req, res) => {
 });
 
 app.post("/chat-with-bot", async (req, res) => {
-  const { botId, prompt } = req.body;
+  const { botId, prompt, messages } = req.body;
 
   if (!botId) {
     return res.status(400).json({ error: "Missing botId" });
@@ -200,7 +200,8 @@ app.post("/chat-with-bot", async (req, res) => {
   const completion = await getFineTunedChat(
     client,
     botModel.open_ai_id,
-    prompt
+    prompt,
+    messages
   );
   res.json({ completion });
 });

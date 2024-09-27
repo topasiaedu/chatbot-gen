@@ -1,6 +1,11 @@
 import OpenAI from "openai";
 
-export async function getFineTunedChat(client:OpenAI, modelId:string, prompt:string){
+export async function getFineTunedChat(
+  client: OpenAI,
+  modelId: string,
+  prompt: string,
+  messages?: any[]
+) {
   if (!client) {
     throw new Error("OpenAI client is not defined");
   }
@@ -8,6 +13,22 @@ export async function getFineTunedChat(client:OpenAI, modelId:string, prompt:str
   if (!prompt) {
     throw new Error("Prompt is required");
   }
+  // Example of messages from input
+  // [
+  //   { text: "Hi there", sender: "user" },
+  //   { text:  Hello! How can I help you today?", sender: "bot" },
+  // ]
+  if (!messages) {
+    messages = [];
+  }
+  let messagesPayload = messages.map((message) => {
+    const role:"function" | "user" | "assistant" | "system" | "tool" = message.sender === "user" ? "user" : "assistant";
+    return {
+      role: role,
+      content: message.text,
+    };
+  });
+
   const completion = await client.chat.completions.create({
     model: modelId,
     messages: [
@@ -15,6 +36,7 @@ export async function getFineTunedChat(client:OpenAI, modelId:string, prompt:str
         role: "system",
         content: "You are a helpful assistant.",
       },
+      ...messagesPayload,
       {
         role: "user",
         content: prompt,
@@ -23,4 +45,4 @@ export async function getFineTunedChat(client:OpenAI, modelId:string, prompt:str
   });
 
   return completion.choices[0].message.content;
-} 
+}

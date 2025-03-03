@@ -9,7 +9,7 @@ export async function getChatCompletions(client: OpenAI, prompt: string) {
     throw new Error("Prompt is required");
   }
   const completion = await client.chat.completions.create({
-    model: "gpt-3.5-turbo",
+    model: "gpt-4o-mini-2024-07-18",
     messages: [
       {
         role: "system",

@@ -36,7 +36,7 @@ function fineTuneModel(client) {
             // Step 2: Use the file ID to create a fine-tuning job
             const fineTune = yield client.fineTuning.jobs.create({
                 training_file: fileId,
-                model: "gpt-3.5-turbo",
+                model: "gpt-4o-mini-2024-07-18",
                 suffix: uniqueJobName // Adds a unique suffix to ensure a new model is created
             });
             return fineTune;

@@ -130,7 +130,7 @@ app.post("/train-bot", async (req, res) => {
   const filePath = "./dist/datasets/generated_dataset.jsonl";
 
   // Ensure the directory exists
-fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
 
   fs.writeFileSync(filePath, "", "utf8");
 

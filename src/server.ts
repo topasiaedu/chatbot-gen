@@ -15,6 +15,7 @@ import {
   fetchBotModelCountByBotId,
 } from "./db/bot_model";
 const fs = require("fs");
+import path from "path";
 
 dotenv.config();
 
@@ -126,7 +127,11 @@ app.post("/train-bot", async (req, res) => {
 
   const botFiles: BotFile[] = await fetchBotFilesByBotId(bot.id);
 
-  const filePath = "./src/datasets/generated_dataset.jsonl";
+  const filePath = "./dist/datasets/generated_dataset.jsonl";
+
+  // Ensure the directory exists
+fs.mkdirSync(path.dirname(filePath), { recursive: true });
+
   fs.writeFileSync(filePath, "", "utf8");
 
   let fileProcessed = 0;

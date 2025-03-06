@@ -145,13 +145,7 @@ async function generateDataForChunk(
   let iterationCount = 0;
 
   while (remainingText.trim() && iterationCount < maxIterations) {
-    const remainingTokens = encode(remainingText).length;
-    console.log(
-      "Processing chunk iteration:",
-      iterationCount + 1,
-      "Remaining tokens:",
-      remainingTokens
-    );
+    console.log("Processing chunk iteration:", iterationCount + 1);
 
     try {
       const completion = await client.chat.completions.create({
@@ -254,10 +248,19 @@ export async function generateDataSetsInChunks(
   if (!classification) {
     throw new Error("Failed to classify the document type");
   }
+  const totalChunks = textChunks.length; // Get total number of chunks
+  let chunkIndex = 0; // Initialize chunk counter
 
   for (const chunk of textChunks) {
-    console.log("Processing chunk:", chunk.length);
-    const chunkData = await generateDataForChunk(client, chunk, classification, trainingDepth); // Process each chunk
+    chunkIndex++; // Increment chunk counter
+
+    console.log("Processing chunk index:", chunkIndex, "of", totalChunks);
+    const chunkData = await generateDataForChunk(
+      client,
+      chunk,
+      classification,
+      trainingDepth
+    ); // Process each chunk
     allDataSets += chunkData; // Collect all generated data
     console.log("Total data length:", allDataSets.length);
   }
@@ -268,7 +271,7 @@ export async function generateDataSetsInChunks(
   console.log("Total JSONL data length:", jsonData.length);
 
   // File path to save the JSONL
-  const filePath = "./src/datasets/generated_dataset.jsonl";
+  const filePath = "./dist/datasets/generated_dataset.jsonl";
 
   // Call the function to write JSONL
   writeJSONLToFile(jsonData, filePath);

@@ -9,7 +9,7 @@
     "supabase-sync": "npx supabase gen types typescript --project-id ldemovdvrlzrneitmwez > src/database.types.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "update-server": "git pull && tsc && pm2 restart chatbot-gen-2 && pm2 logs"
+    "update-server": "git pull && npm install && tsc && pm2 restart chatbot-gen-2 && pm2 logs"
   },
   "keywords": [],
   "author": "",
@@ -31,13 +31,13 @@
     "cors": "^2.8.5",
     "csv-parser": "^3.0.0",
     "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
     "express": "^4.21.0",
     "gpt-3-encoder": "^1.1.4",
     "mammoth": "^1.8.0",
     "nodemon": "^3.1.5",
     "openai": "^4.62.1",
     "pdf-parse": "^1.1.1",
-    "textract": "^2.5.0",
-    "xlsx": "^0.18.5"
+    "textract": "^2.5.0"
   }
 }

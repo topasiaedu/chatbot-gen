@@ -7,7 +7,7 @@ import mammoth from "mammoth";
 import textract from "textract";
 import csvParser from "csv-parser";
 import cheerio from "cheerio";
-import xlsx from "xlsx";
+import ExcelJS from "exceljs";
 
 // Helper function to download a file from a URL and save it to a temporary location
 async function downloadFileFromUrl(fileUrl: string): Promise<string> {
@@ -45,22 +45,23 @@ async function extractTextFromCSV(filePath: string): Promise<string> {
 }
 
 // Helper function to extract text from Excel files
-function extractTextFromXLSX(filePath: string): string {
-  const workbook = xlsx.readFile(filePath);
+async function extractTextFromXLSX(filePath: string): Promise<string> {
+  const workbook = new ExcelJS.Workbook();
+  await workbook.xlsx.readFile(filePath);
   let content = "";
   
-  // Iterate through each sheet
-  workbook.SheetNames.forEach((sheetName) => {
-    const worksheet = workbook.Sheets[sheetName];
-    const sheetData = xlsx.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
-    
+  // Iterate through each worksheet
+  workbook.eachSheet((worksheet, sheetId) => {
     // Add sheet name as a header
-    content += `Sheet: ${sheetName}\n`;
+    content += `Sheet: ${worksheet.name}\n`;
     
-    // Convert rows to text
-    sheetData.forEach((row) => {
-      if (row && row.length) {
-        content += row.join(", ") + "\n";
+    // Iterate through each row
+    worksheet.eachRow((row, rowNumber) => {
+      const rowValues = row.values as any[];
+      // Skip the first element as it's typically undefined in ExcelJS
+      const filteredValues = rowValues.filter((val, index) => index > 0 && val !== undefined);
+      if (filteredValues.length) {
+        content += filteredValues.join(", ") + "\n";
       }
     });
     
@@ -122,7 +123,7 @@ export async function extractTextFromFileUrl(fileUrl: string): Promise<string> {
         break;
       case ".xlsx":
       case ".xls":
-        extractedText = extractTextFromXLSX(tempFilePath);
+        extractedText = await extractTextFromXLSX(tempFilePath);
         break;
       case ".txt":
         extractedText = extractTextFromTXT(tempFilePath);

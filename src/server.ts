@@ -20,8 +20,9 @@ import path from "path";
 dotenv.config();
 
 const app = express();
-const port = 8000;
+const port = process.env.PORT || 8000;
 
+// Middleware
 app.use(express.json());
 
 // Configure CORS options
@@ -50,12 +51,27 @@ if (!OPENAI_API_KEY) {
   process.exit(1);
 }
 
+// Custom error type for API errors
+interface ApiError extends Error {
+  statusCode?: number;
+  details?: unknown;
+}
+
 const client = new OpenAI({
   apiKey: process.env["OPENAI_API_KEY"], // This is the default and can be omitted
 });
 
 app.get("/", (req, res) => {
   res.send("Hello World!");
+});
+
+app.get("/health", (req, res) => {
+  res.status(200).json({
+    status: "UP",
+    timestamp: new Date().toISOString(),
+    version: process.env.npm_package_version || "1.0.0",
+    uptime: process.uptime()
+  });
 });
 
 app.post("/chat", async (req, res) => {
@@ -210,6 +226,40 @@ app.post("/chat-with-bot", async (req, res) => {
     messages
   );
   res.json({ completion });
+});
+
+// Error handling middleware
+app.use((err: ApiError, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error(`Error: ${err.message}`);
+  console.error(err.stack);
+  
+  const statusCode = err.statusCode || 500;
+  const errorResponse: Record<string, any> = {
+    error: {
+      message: err.message || "Internal Server Error"
+    }
+  };
+  
+  // Add stack trace in non-production environments
+  if (process.env.NODE_ENV !== "production" && err.stack) {
+    errorResponse.error.stack = err.stack;
+  }
+  
+  // Add error details if available
+  if (err.details) {
+    errorResponse.error.details = err.details;
+  }
+  
+  res.status(statusCode).json(errorResponse);
+});
+
+// Not found middleware
+app.use((req: express.Request, res: express.Response) => {
+  res.status(404).json({
+    error: {
+      message: `Not Found - ${req.method} ${req.originalUrl}`
+    }
+  });
 });
 
 app.listen(port, () => {

@@ -7,6 +7,7 @@ import mammoth from "mammoth";
 import textract from "textract";
 import csvParser from "csv-parser";
 import cheerio from "cheerio";
+import xlsx from "xlsx";
 
 // Helper function to download a file from a URL and save it to a temporary location
 async function downloadFileFromUrl(fileUrl: string): Promise<string> {
@@ -41,6 +42,32 @@ async function extractTextFromCSV(filePath: string): Promise<string> {
       })
       .on("error", reject);
   });
+}
+
+// Helper function to extract text from Excel files
+function extractTextFromXLSX(filePath: string): string {
+  const workbook = xlsx.readFile(filePath);
+  let content = "";
+  
+  // Iterate through each sheet
+  workbook.SheetNames.forEach((sheetName) => {
+    const worksheet = workbook.Sheets[sheetName];
+    const sheetData = xlsx.utils.sheet_to_json(worksheet, { header: 1 }) as any[][];
+    
+    // Add sheet name as a header
+    content += `Sheet: ${sheetName}\n`;
+    
+    // Convert rows to text
+    sheetData.forEach((row) => {
+      if (row && row.length) {
+        content += row.join(", ") + "\n";
+      }
+    });
+    
+    content += "\n"; // Add separation between sheets
+  });
+  
+  return content;
 }
 
 // Helper function to extract text from TXT files
@@ -92,6 +119,10 @@ export async function extractTextFromFileUrl(fileUrl: string): Promise<string> {
     switch (ext) {
       case ".csv":
         extractedText = await extractTextFromCSV(tempFilePath);
+        break;
+      case ".xlsx":
+      case ".xls":
+        extractedText = extractTextFromXLSX(tempFilePath);
         break;
       case ".txt":
         extractedText = extractTextFromTXT(tempFilePath);

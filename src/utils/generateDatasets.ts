@@ -84,7 +84,7 @@ async function generateDataForChunk(
             content: remainingText,
           },
         ],
-        max_tokens: 4096, // Reduced from 16384 to prevent memory overuse
+        max_tokens: 16384, // Reduced from 16384 to prevent memory overuse
       });
 
       const newData = completion.choices[0].message.content;

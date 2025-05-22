@@ -40,12 +40,43 @@ function writeJSONLToFile(jsonArray: any[], filePath: string) {
     return;
   }
 
+  // Ensure we're creating a proper JSONL file (one JSON object per line)
   const jsonlData = validatedJsonArray
-    .map((entry: any) => JSON.stringify(entry)) // Convert each object to a JSON string
+    .map((entry: any) => {
+      try {
+        const cleanedEntry = {
+          messages: entry.messages.map((msg: any) => ({
+            role: msg.role,
+            content: msg.content.replace(/\n/g, " ").trim() // Replace newlines with spaces
+          }))
+        };
+        return JSON.stringify(cleanedEntry);
+      } catch (error) {
+        console.warn("Error stringifying entry:", (error as Error).message);
+        return null;
+      }
+    })
+    .filter(Boolean) // Remove any null entries
     .join("\n"); // Join them with newlines to form valid JSONL
 
-  // Append the JSONL data to the file instead of overwriting it
-  fs.appendFileSync(filePath, jsonlData + "\n", "utf8");
+  // Check if the file exists and has content before appending
+  let existingData = "";
+  if (fs.existsSync(filePath)) {
+    const fileStats = fs.statSync(filePath);
+    if (fileStats.size > 0) {
+      existingData = fs.readFileSync(filePath, "utf8");
+      // Make sure we don't append without a newline separator
+      if (!existingData.endsWith("\n")) {
+        existingData += "\n";
+      }
+    }
+  }
+
+  // Write the combined data to the file
+  fs.writeFileSync(filePath, existingData + jsonlData + "\n", "utf8");
+  
+  // Verify the file was written correctly
+  console.log(`Successfully wrote ${validatedJsonArray.length} entries to ${filePath}`);
 }
 
 function convertToJSON(responseString: string): { messages: { role: string; content: string }[] }[] {
@@ -468,11 +499,74 @@ export async function generateDataSetsInChunks(
   // Add a final check to count total entries in the file
   try {
     const fileContent = fs.readFileSync(filePath, "utf8");
-    const lines = fileContent.split("\n").filter(Boolean);
+    const lines: string[] = fileContent.split("\n").filter((line: string) => line.trim().length > 0);
     console.log(`Total dataset for model ${modelId} now contains ${lines.length} entries across all documents.`);
   } catch (error) {
     console.error(`Error counting total entries for model ${modelId}:`, (error as Error).message);
   }
   
   return filePath;
+}
+
+export function validateJsonlFile(filePath: string): boolean {
+  try {
+    if (!fs.existsSync(filePath)) {
+      console.error(`File does not exist: ${filePath}`);
+      return false;
+    }
+
+    const fileStats = fs.statSync(filePath);
+    if (fileStats.size === 0) {
+      console.error(`File is empty: ${filePath}`);
+      return false;
+    }
+
+    const fileContent = fs.readFileSync(filePath, "utf8");
+    const lines: string[] = fileContent.split("\n").filter((line: string) => line.trim().length > 0);
+    
+    if (lines.length === 0) {
+      console.error(`No valid content lines found in file: ${filePath}`);
+      return false;
+    }
+
+    console.log(`Validating ${lines.length} lines in JSONL file: ${filePath}`);
+    
+    // Check each line is valid JSON and has the expected format
+    const invalidLines: number[] = [];
+    
+    lines.forEach((line: string, index: number) => {
+      try {
+        const parsed = JSON.parse(line);
+        
+        // Check for required structure
+        if (!parsed.messages || !Array.isArray(parsed.messages) || parsed.messages.length < 2) {
+          throw new Error("Missing or invalid messages array");
+        }
+        
+        // Check messages format
+        const invalidMessages = parsed.messages.filter((msg: any) => 
+          !msg || typeof msg.role !== "string" || typeof msg.content !== "string" || 
+          !["user", "assistant"].includes(msg.role)
+        );
+        
+        if (invalidMessages.length > 0) {
+          throw new Error(`Invalid message format at index ${invalidMessages.map((_: any, i: number) => i).join(", ")}`);
+        }
+      } catch (error) {
+        invalidLines.push(index + 1); // 1-indexed for human readability
+        console.error(`Invalid JSON at line ${index + 1}: ${(error as Error).message}`);
+      }
+    });
+    
+    if (invalidLines.length > 0) {
+      console.error(`Found ${invalidLines.length} invalid lines in JSONL file: ${invalidLines.join(", ")}`);
+      return false;
+    }
+    
+    console.log(`JSONL file is valid with ${lines.length} entries: ${filePath}`);
+    return true;
+  } catch (error) {
+    console.error(`Error validating JSONL file: ${(error as Error).message}`);
+    return false;
+  }
 }

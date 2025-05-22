@@ -77,7 +77,13 @@ async function generateDataForChunk(
             role: "system",
             content: `You are an AI that generates fine-tuning datasets for training language models. 
                       Summary: ${summary}
-                      Format: {Prompt: ... Completion: ...}`,
+                      Format: {
+  "messages": [
+    {"role": "user", "content": "What does the document say about astrology and personal development?"},
+    {"role": "assistant", "content": "The document explains how astrology uses stars and their positions..."}
+  ]
+}
+`,
           },
           {
             role: "user",

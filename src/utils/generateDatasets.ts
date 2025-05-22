@@ -4,7 +4,43 @@ import { encode } from "gpt-3-encoder"; // Import the GPT-3 encoder to handle to
 const fs = require("fs");
 
 function writeJSONLToFile(jsonArray: any[], filePath: string) {
-  const jsonlData = jsonArray
+  // Validate each JSON object before writing
+  const validatedJsonArray = jsonArray.filter(entry => {
+    try {
+      // Check if the entry is valid JSON by stringifying and parsing
+      const jsonString = JSON.stringify(entry);
+      JSON.parse(jsonString);
+      
+      // Additional validation for the expected structure
+      if (!entry.messages || !Array.isArray(entry.messages) || entry.messages.length < 2) {
+        console.warn("Skipping invalid entry: Missing or invalid messages array");
+        return false;
+      }
+      
+      // Validate each message has role and content
+      const validMessages = entry.messages.every((msg: any) => 
+        msg && typeof msg.role === "string" && typeof msg.content === "string" && 
+        msg.content.trim().length > 0 && ["user", "assistant"].includes(msg.role)
+      );
+      
+      if (!validMessages) {
+        console.warn("Skipping entry with invalid message format");
+        return false;
+      }
+      
+      return true;
+    } catch (error) {
+      console.warn("Skipping invalid JSON entry:", (error as Error).message);
+      return false;
+    }
+  });
+
+  if (validatedJsonArray.length === 0) {
+    console.warn("No valid JSON entries to write");
+    return;
+  }
+
+  const jsonlData = validatedJsonArray
     .map((entry: any) => JSON.stringify(entry)) // Convert each object to a JSON string
     .join("\n"); // Join them with newlines to form valid JSONL
 
@@ -13,36 +49,96 @@ function writeJSONLToFile(jsonArray: any[], filePath: string) {
 }
 
 function convertToJSON(responseString: string): { messages: { role: string; content: string }[] }[] {
-  const jsonlData = responseString
-    .split("user:")
-    .filter(Boolean)
-    .map((entry) => {
-      const [userContent, assistantPart] = entry.split("assistant:");
-      if (!userContent || !assistantPart || userContent.trim().length < 10 || assistantPart.trim().length < 10) {
-        return null;
+  try {
+    // Normalize line endings and spacing to improve parsing
+    const normalizedString = responseString.replace(/\r\n/g, "\n").replace(/\n\s*\n/g, "\n");
+    
+    // More robust pattern matching
+    const entries: { messages: { role: string; content: string }[] }[] = [];
+    
+    // Split by obvious user/assistant pairs
+    const regex = /user:\s*([\s\S]*?)assistant:\s*([\s\S]*?)(?=user:|$)/gi;
+    let match;
+    
+    while ((match = regex.exec(normalizedString)) !== null) {
+      const userContent = match[1].trim();
+      const assistantContent = match[2].trim();
+      
+      // Validate minimum content length
+      if (userContent.length >= 5 && assistantContent.length >= 5) {
+        entries.push({
+          messages: [
+            { role: "user", content: userContent },
+            { role: "assistant", content: assistantContent }
+          ]
+        });
       }
-      return {
-        messages: [
-          { role: "user", content: userContent.trim() },
-          { role: "assistant", content: assistantPart.trim() }
-        ]
-      };
-    })
-    .filter((entry): entry is { messages: { role: string; content: string }[] } => entry !== null);
-
-  return jsonlData;
+    }
+    
+    // If regex matching failed, try the previous split approach as fallback
+    if (entries.length === 0) {
+      return normalizedString
+        .split("user:")
+        .filter(Boolean)
+        .map((entry) => {
+          const parts = entry.split("assistant:");
+          if (parts.length < 2) return null;
+          
+          const userContent = parts[0].trim();
+          const assistantContent = parts.slice(1).join("assistant:").trim();
+          
+          if (!userContent || !assistantContent || userContent.length < 5 || assistantContent.length < 5) {
+            return null;
+          }
+          
+          return {
+            messages: [
+              { role: "user", content: userContent },
+              { role: "assistant", content: assistantContent }
+            ]
+          };
+        })
+        .filter((entry): entry is { messages: { role: string; content: string }[] } => entry !== null);
+    }
+    
+    return entries;
+  } catch (error) {
+    console.error("Error converting response to JSON:", (error as Error).message);
+    return [];
+  }
 }
 
 function convertJSONToJSONL(jsonArray: { messages: { role: string; content: string }[] }[]): string {
-  return jsonArray
-    .map((entry) => {
-      const cleanedMessages = entry.messages.map(message => {
-        const cleanedContent = message.content.replace(/\\n/g, "\n").replace(/\\"/g, '"');
-        return { role: message.role, content: cleanedContent };
-      });
-      return JSON.stringify({ messages: cleanedMessages });
-    })
-    .join("\n");
+  try {
+    return jsonArray
+      .map((entry) => {
+        try {
+          const cleanedMessages = entry.messages.map(message => {
+            // Ensure content is valid by removing problematic characters
+            const cleanedContent = message.content
+              .replace(/\\n/g, "\n")
+              .replace(/\\"/g, '"')
+              // Remove any control characters that might break JSON
+              .replace(/[\u0000-\u001F\u007F-\u009F]/g, " ");
+            
+            return { role: message.role, content: cleanedContent };
+          });
+          
+          const jsonString = JSON.stringify({ messages: cleanedMessages });
+          // Validate that we can parse it back
+          JSON.parse(jsonString);
+          return jsonString;
+        } catch (error) {
+          console.warn("Skipping invalid entry in JSONL conversion:", (error as Error).message);
+          return null;
+        }
+      })
+      .filter(Boolean)
+      .join("\n");
+  } catch (error) {
+    console.error("Error converting JSON to JSONL:", (error as Error).message);
+    return "";
+  }
 }
 
 // Helper function to split text into smaller chunks (500 tokens instead of 1000)
@@ -62,6 +158,41 @@ function decodeTokens(tokens: number[]): string {
   return tokens.join(" "); // Adjust decoding logic if necessary
 }
 
+// Add a new utility function for API call retries with exponential backoff
+async function retryWithBackoff<T>(
+  operation: () => Promise<T>,
+  retries: number = 3,
+  initialDelay: number = 1000,
+  maxDelay: number = 30000
+): Promise<T> {
+  let currentDelay = initialDelay;
+  let attempts = 0;
+
+  while (true) {
+    try {
+      attempts++;
+      // Add timeout to prevent hanging
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("API request timed out")), 60000); // 60 second timeout
+      });
+      
+      return await Promise.race([operation(), timeoutPromise]) as T;
+    } catch (error) {
+      if (attempts >= retries) {
+        console.error(`Operation failed after ${attempts} attempts:`, (error as Error).message);
+        throw error;
+      }
+      
+      // Log the error but continue
+      console.warn(`Attempt ${attempts} failed, retrying in ${currentDelay}ms:`, (error as Error).message);
+      
+      // Wait before retrying with exponential backoff
+      await new Promise(resolve => setTimeout(resolve, currentDelay));
+      currentDelay = Math.min(currentDelay * 2, maxDelay);
+    }
+  }
+}
+
 async function generateDataForChunk(
   client: OpenAI,
   textChunk: string,
@@ -77,27 +208,42 @@ async function generateDataForChunk(
     console.log("Processing chunk iteration:", iterationCount + 1);
 
     try {
-      const completion = await client.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [
-          {
-            role: "system",
-            content: `You are an AI that generates fine-tuning datasets for training language models. 
-                      Summary: ${summary}
-                      Format: {user: ... assistant: ...}
-                      
-                      Generate conversation pairs where the user asks questions about the content and the assistant responds with helpful, accurate information.
-                      Each pair should be clearly marked with "user:" and "assistant:" prefixes.`,
-          },
-          {
-            role: "user",
-            content: remainingText,
-          },
-        ],
-        max_tokens: 16384, // Reduced from 16384 to prevent memory overuse
-      });
+      // Use the retry function to handle API call failures with backoff
+      const completion = await retryWithBackoff(async () => {
+        return await client.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: `You are an AI that generates fine-tuning datasets for training language models. 
+                        Summary: ${summary}
+                        
+                        IMPORTANT: Generate valid JSON-compatible conversation pairs with this exact format:
+                        user: <user question about the content>
+                        assistant: <detailed answer from the assistant>
+                        
+                        Each pair must be clearly marked with "user:" and "assistant:" prefixes.
+                        Do not include any special characters that would break JSON parsing.
+                        Generate 3-5 high-quality conversation pairs only.`,
+            },
+            {
+              role: "user",
+              content: remainingText,
+            },
+          ],
+          max_tokens: 16384,
+          temperature: 0.7, // Add temperature to reduce repetitive outputs
+        });
+      }, 3, 2000, 30000);
 
-      const newData = completion.choices[0].message.content;
+      // Validate the response before processing
+      if (!completion || !completion.choices || !completion.choices[0] || !completion.choices[0].message) {
+        console.warn("Received invalid response structure from OpenAI");
+        iterationCount++; // Increment to avoid infinite loops
+        continue;
+      }
+
+      const newData = completion.choices[0].message.content || "";
 
       // Stop processing if newData is empty or too similar to previous data
       if (!newData || newData === previousData || newData.trim().length < 50) {
@@ -109,8 +255,10 @@ async function generateDataForChunk(
       previousData = newData;
       iterationCount++; // Prevent infinite loops
     } catch (error) {
-      console.error("Error generating additional dataset:", (error as any).message);
-      throw error;
+      console.error("Error generating additional dataset:", (error as Error).message);
+      // Instead of throwing, just break the loop and return what we have so far
+      console.log("Returning partial data due to API error");
+      break;
     }
   }
 
@@ -123,53 +271,148 @@ export async function generateDataSetsInChunks(
   trainingBreadth: number = 500, // Reduced chunk size from 1000 to 500
   trainingDepth: number = 1
 ): Promise<string> {
-  const extractedText = await extractTextFromFileUrl(fileUrl);
-  console.log("Extracted text length:", extractedText.length);
-
-  const textChunks = splitTextIntoChunks(extractedText, trainingBreadth);
-  console.log("Total chunks:", textChunks.length);
-  
   const filePath = "./dist/datasets/generated_dataset.jsonl"; // File path for output
-  fs.writeFileSync(filePath, ""); // Clear file before writing
-
-  const classificationResponse = await client.chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "system",
-        content: `Classify the document and generate a summary for a child.`,
-      },
-      {
-        role: "user",
-        content: extractedText,
-      },
-    ],
-    max_tokens: 1024,
-  });
-
-  const classification = classificationResponse.choices[0].message.content;
-  console.log("Classification:", classification);
-
-  if (!classification) {
-    throw new Error("Failed to classify the document type");
-  }
-
-  let chunkIndex = 0;
-  const totalChunks = textChunks.length;
-
-  for (const chunk of textChunks) {
-    chunkIndex++;
-    console.log("Processing chunk index:", chunkIndex, "of", totalChunks);
-
-    const chunkData = await generateDataForChunk(client, chunk, classification, trainingDepth);
-
-    if (chunkData.length > 0) {
-      const jsonData = convertToJSON(chunkData);
-      const jsonlData = convertJSONToJSONL(jsonData);
-      writeJSONLToFile(jsonData, filePath); // Write each chunk immediately
+  
+  try {
+    // Ensure the directory exists
+    const dir = "./dist/datasets";
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
     }
-  }
+    
+    // Clear file before writing
+    fs.writeFileSync(filePath, "");
 
-  console.log("Dataset processing complete. Check:", filePath);
+    const extractedText = await extractTextFromFileUrl(fileUrl);
+    console.log("Extracted text length:", extractedText.length);
+
+    if (!extractedText || extractedText.length < 100) {
+      console.error("Extracted text is too short or empty");
+      return filePath;
+    }
+
+    const textChunks = splitTextIntoChunks(extractedText, trainingBreadth);
+    console.log("Total chunks:", textChunks.length);
+    
+    // Get document classification with timeout and retry
+    let classification = "";
+    try {
+      const classificationResponse = await retryWithBackoff(async () => {
+        return await client.chat.completions.create({
+          model: "gpt-4o-mini",
+          messages: [
+            {
+              role: "system",
+              content: `Classify the document and generate a summary for a child.`,
+            },
+            {
+              role: "user",
+              content: extractedText.substring(0, Math.min(extractedText.length, 16000)), // Limit input size
+            },
+          ],
+          max_tokens: 1024,
+        });
+      }, 3, 2000, 30000);
+
+      classification = classificationResponse.choices[0].message.content || "Document content analysis";
+    } catch (error) {
+      console.error("Classification failed, using generic summary:", (error as Error).message);
+      classification = "Document content analysis"; // Default if classification fails
+    }
+
+    console.log("Classification:", classification);
+
+    let chunkIndex = 0;
+    const totalChunks = textChunks.length;
+    let validEntriesCount = 0;
+    let failedChunks = 0;
+
+    // Process chunks with a limit on consecutive failures
+    for (const chunk of textChunks) {
+      chunkIndex++;
+      console.log("Processing chunk index:", chunkIndex, "of", totalChunks);
+
+      try {
+        const chunkData = await generateDataForChunk(client, chunk, classification, trainingDepth);
+
+        if (chunkData && chunkData.length > 0) {
+          const jsonData = convertToJSON(chunkData);
+          
+          if (jsonData.length > 0) {
+            // Validate each entry before writing
+            jsonData.forEach((entry, index) => {
+              try {
+                // Test JSON stringify/parse roundtrip
+                const jsonString = JSON.stringify(entry);
+                JSON.parse(jsonString);
+                validEntriesCount++;
+              } catch (error) {
+                console.error(`Invalid JSON at entry ${validEntriesCount + index}:`, (error as Error).message);
+              }
+            });
+            
+            writeJSONLToFile(jsonData, filePath); // Write each chunk immediately
+            console.log(`Added ${jsonData.length} valid entries, total: ${validEntriesCount}`);
+            failedChunks = 0; // Reset consecutive failure counter on success
+          } else {
+            failedChunks++;
+            console.warn(`No valid JSON data extracted from chunk ${chunkIndex}`);
+          }
+        } else {
+          failedChunks++;
+          console.warn(`No data generated for chunk ${chunkIndex}`);
+        }
+
+        // If too many consecutive chunks fail, pause processing
+        if (failedChunks >= 5) {
+          console.warn("Too many consecutive failures, pausing for 30 seconds");
+          await new Promise(resolve => setTimeout(resolve, 30000));
+          failedChunks = 0;
+        }
+      } catch (error) {
+        failedChunks++;
+        console.error(`Error processing chunk ${chunkIndex}:`, (error as Error).message);
+        
+        // Add a delay after errors to prevent API rate limiting
+        console.log("Pausing for 5 seconds after error");
+        await new Promise(resolve => setTimeout(resolve, 5000));
+        
+        // Continue with next chunk instead of failing the entire process
+        continue;
+      }
+    }
+
+    console.log(`Dataset processing complete. Generated ${validEntriesCount} valid entries. Check: ${filePath}`);
+    
+    // Final validation of the entire file
+    try {
+      const fileContent = fs.readFileSync(filePath, "utf8");
+      const lines = fileContent.split("\n").filter(Boolean);
+      
+      console.log(`Validating ${lines.length} lines in the final file...`);
+      
+      let invalidLines = 0;
+      lines.forEach((line: string, index: number) => {
+        try {
+          JSON.parse(line);
+        } catch (error) {
+          invalidLines++;
+          console.error(`Invalid JSON at line ${index + 1}:`, (error as Error).message.substring(0, 100));
+        }
+      });
+      
+      if (invalidLines > 0) {
+        console.warn(`Found ${invalidLines} invalid lines in the final file. Consider rerunning or fixing manually.`);
+      } else {
+        console.log("Final validation successful. All JSON lines are valid.");
+      }
+    } catch (error) {
+      console.error("Error during final validation:", (error as Error).message);
+    }
+  } catch (error) {
+    console.error("Fatal error in dataset generation:", (error as Error).message);
+    // Ensure we return the file path even if there was an error
+  }
+  
   return filePath;
 }

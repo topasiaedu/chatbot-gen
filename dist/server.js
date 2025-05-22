@@ -50,7 +50,8 @@ const fs = require("fs");
 const path_1 = __importDefault(require("path"));
 dotenv.config();
 const app = (0, express_1.default)();
-const port = 8000;
+const port = process.env.PORT || 8000;
+// Middleware
 app.use(express_1.default.json());
 // Configure CORS options
 const corsOptions = {
@@ -79,6 +80,14 @@ const client = new openai_1.default({
 });
 app.get("/", (req, res) => {
     res.send("Hello World!");
+});
+app.get("/health", (req, res) => {
+    res.status(200).json({
+        status: "UP",
+        timestamp: new Date().toISOString(),
+        version: process.env.npm_package_version || "1.0.0",
+        uptime: process.uptime()
+    });
 });
 app.post("/chat", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { prompt } = req.body;
@@ -181,6 +190,34 @@ app.post("/chat-with-bot", (req, res) => __awaiter(void 0, void 0, void 0, funct
     const completion = yield (0, fineTunedChat_1.getFineTunedChat)(client, botModel.open_ai_id, prompt, bot.description, messages);
     res.json({ completion });
 }));
+// Error handling middleware
+app.use((err, req, res, next) => {
+    console.error(`Error: ${err.message}`);
+    console.error(err.stack);
+    const statusCode = err.statusCode || 500;
+    const errorResponse = {
+        error: {
+            message: err.message || "Internal Server Error"
+        }
+    };
+    // Add stack trace in non-production environments
+    if (process.env.NODE_ENV !== "production" && err.stack) {
+        errorResponse.error.stack = err.stack;
+    }
+    // Add error details if available
+    if (err.details) {
+        errorResponse.error.details = err.details;
+    }
+    res.status(statusCode).json(errorResponse);
+});
+// Not found middleware
+app.use((req, res) => {
+    res.status(404).json({
+        error: {
+            message: `Not Found - ${req.method} ${req.originalUrl}`
+        }
+    });
+});
 app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
 });

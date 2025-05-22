@@ -22,6 +22,7 @@ const mammoth_1 = __importDefault(require("mammoth"));
 const textract_1 = __importDefault(require("textract"));
 const csv_parser_1 = __importDefault(require("csv-parser"));
 const cheerio_1 = __importDefault(require("cheerio"));
+const exceljs_1 = __importDefault(require("exceljs"));
 // Helper function to download a file from a URL and save it to a temporary location
 function downloadFileFromUrl(fileUrl) {
     return __awaiter(this, void 0, void 0, function* () {
@@ -55,6 +56,30 @@ function extractTextFromCSV(filePath) {
             })
                 .on("error", reject);
         });
+    });
+}
+// Helper function to extract text from Excel files
+function extractTextFromXLSX(filePath) {
+    return __awaiter(this, void 0, void 0, function* () {
+        const workbook = new exceljs_1.default.Workbook();
+        yield workbook.xlsx.readFile(filePath);
+        let content = "";
+        // Iterate through each worksheet
+        workbook.eachSheet((worksheet, sheetId) => {
+            // Add sheet name as a header
+            content += `Sheet: ${worksheet.name}\n`;
+            // Iterate through each row
+            worksheet.eachRow((row, rowNumber) => {
+                const rowValues = row.values;
+                // Skip the first element as it's typically undefined in ExcelJS
+                const filteredValues = rowValues.filter((val, index) => index > 0 && val !== undefined);
+                if (filteredValues.length) {
+                    content += filteredValues.join(", ") + "\n";
+                }
+            });
+            content += "\n"; // Add separation between sheets
+        });
+        return content;
     });
 }
 // Helper function to extract text from TXT files
@@ -108,6 +133,10 @@ function extractTextFromFileUrl(fileUrl) {
             switch (ext) {
                 case ".csv":
                     extractedText = yield extractTextFromCSV(tempFilePath);
+                    break;
+                case ".xlsx":
+                case ".xls":
+                    extractedText = yield extractTextFromXLSX(tempFilePath);
                     break;
                 case ".txt":
                     extractedText = extractTextFromTXT(tempFilePath);

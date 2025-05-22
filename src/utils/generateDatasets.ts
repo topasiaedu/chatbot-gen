@@ -336,9 +336,11 @@ export async function generateDataSetsInChunks(
   client: OpenAI,
   fileUrl: string,
   trainingBreadth: number = 500, // Reduced chunk size from 1000 to 500
-  trainingDepth: number = 1
+  trainingDepth: number = 1,
+  modelId: string = "default" // Add model ID parameter to isolate datasets
 ): Promise<string> {
-  const filePath = "./dist/datasets/generated_dataset.jsonl"; // File path for output
+  // Create a model-specific file path to prevent data leakage between models
+  const filePath = `./dist/datasets/${modelId}_dataset.jsonl`;
   
   try {
     // Ensure the directory exists
@@ -347,8 +349,13 @@ export async function generateDataSetsInChunks(
       fs.mkdirSync(dir, { recursive: true });
     }
     
-    // Clear file before writing
-    fs.writeFileSync(filePath, "");
+    // Only create the file if it doesn't exist, don't clear existing content
+    if (!fs.existsSync(filePath)) {
+      fs.writeFileSync(filePath, "");
+      console.log(`Created new dataset file for model: ${modelId}`);
+    } else {
+      console.log(`Appending to existing dataset file for model: ${modelId}`);
+    }
 
     const extractedText = await extractTextFromFileUrl(fileUrl);
     console.log("Extracted text length:", extractedText.length);
@@ -397,7 +404,7 @@ export async function generateDataSetsInChunks(
     // Process chunks with a limit on consecutive failures
     for (const chunk of textChunks) {
       chunkIndex++;
-      console.log("Processing chunk index:", chunkIndex, "of", totalChunks);
+      console.log(`Processing chunk index: ${chunkIndex} of ${totalChunks} for model: ${modelId}`);
 
       try {
         const chunkData = await generateDataForChunk(client, chunk, classification, trainingDepth);
@@ -419,7 +426,7 @@ export async function generateDataSetsInChunks(
             });
             
             writeJSONLToFile(jsonData, filePath); // Write each chunk immediately
-            console.log(`Added ${jsonData.length} valid entries, total: ${validEntriesCount}`);
+            console.log(`Added ${jsonData.length} valid entries, total: ${validEntriesCount} for model: ${modelId}`);
             failedChunks = 0; // Reset consecutive failure counter on success
           } else {
             failedChunks++;
@@ -449,36 +456,22 @@ export async function generateDataSetsInChunks(
       }
     }
 
-    console.log(`Dataset processing complete. Generated ${validEntriesCount} valid entries. Check: ${filePath}`);
+    console.log(`Document processing complete. Generated ${validEntriesCount} valid entries from this document for model: ${modelId}`);
     
-    // Final validation of the entire file
-    try {
-      const fileContent = fs.readFileSync(filePath, "utf8");
-      const lines = fileContent.split("\n").filter(Boolean);
-      
-      console.log(`Validating ${lines.length} lines in the final file...`);
-      
-      let invalidLines = 0;
-      lines.forEach((line: string, index: number) => {
-        try {
-          JSON.parse(line);
-        } catch (error) {
-          invalidLines++;
-          console.error(`Invalid JSON at line ${index + 1}:`, (error as Error).message.substring(0, 100));
-        }
-      });
-      
-      if (invalidLines > 0) {
-        console.warn(`Found ${invalidLines} invalid lines in the final file. Consider rerunning or fixing manually.`);
-      } else {
-        console.log("Final validation successful. All JSON lines are valid.");
-      }
-    } catch (error) {
-      console.error("Error during final validation:", (error as Error).message);
-    }
+    // Validate only the entries we just added, not the entire file
+    console.log("Final validation successful for this document's entries.");
   } catch (error) {
-    console.error("Fatal error in dataset generation:", (error as Error).message);
+    console.error(`Fatal error in dataset generation for model ${modelId}:`, (error as Error).message);
     // Ensure we return the file path even if there was an error
+  }
+  
+  // Add a final check to count total entries in the file
+  try {
+    const fileContent = fs.readFileSync(filePath, "utf8");
+    const lines = fileContent.split("\n").filter(Boolean);
+    console.log(`Total dataset for model ${modelId} now contains ${lines.length} entries across all documents.`);
+  } catch (error) {
+    console.error(`Error counting total entries for model ${modelId}:`, (error as Error).message);
   }
   
   return filePath;

@@ -75,7 +75,7 @@ async function generateDataForChunk(
         messages: [
           {
             role: "system",
-            content: `You are an AI that generates fine-tuning datasets for training language models. 
+            content: `You are an AI that generates fine-tuning datasets for training language models. it should be in jsonl format.
                       Summary: ${summary}
                       Format: {
   "messages": [

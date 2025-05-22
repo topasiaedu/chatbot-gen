@@ -12,28 +12,35 @@ function writeJSONLToFile(jsonArray: any[], filePath: string) {
   fs.appendFileSync(filePath, jsonlData + "\n", "utf8");
 }
 
-function convertToJSON(responseString: string): { prompt: string; completion: string }[] {
+function convertToJSON(responseString: string): { messages: { role: string; content: string }[] }[] {
   const jsonlData = responseString
-    .split("Prompt:")
+    .split("user:")
     .filter(Boolean)
     .map((entry) => {
-      const [prompt, completion] = entry.split("Completion:");
-      if (!prompt || !completion || prompt.trim().length < 10 || completion.trim().length < 10) {
+      const [userContent, assistantPart] = entry.split("assistant:");
+      if (!userContent || !assistantPart || userContent.trim().length < 10 || assistantPart.trim().length < 10) {
         return null;
       }
-      return { prompt: prompt.trim(), completion: completion.trim() };
+      return {
+        messages: [
+          { role: "user", content: userContent.trim() },
+          { role: "assistant", content: assistantPart.trim() }
+        ]
+      };
     })
-    .filter((entry): entry is { prompt: string; completion: string } => entry !== null);
+    .filter((entry): entry is { messages: { role: string; content: string }[] } => entry !== null);
 
   return jsonlData;
 }
 
-function convertJSONToJSONL(jsonArray: { prompt: string; completion: string }[]): string {
+function convertJSONToJSONL(jsonArray: { messages: { role: string; content: string }[] }[]): string {
   return jsonArray
     .map((entry) => {
-      const cleanedPrompt = entry.prompt.replace(/\\n/g, "\n").replace(/\\"/g, '"');
-      const cleanedCompletion = entry.completion.replace(/\\n/g, "\n").replace(/\\"/g, '"');
-      return JSON.stringify({ prompt: cleanedPrompt, completion: cleanedCompletion });
+      const cleanedMessages = entry.messages.map(message => {
+        const cleanedContent = message.content.replace(/\\n/g, "\n").replace(/\\"/g, '"');
+        return { role: message.role, content: cleanedContent };
+      });
+      return JSON.stringify({ messages: cleanedMessages });
     })
     .join("\n");
 }
@@ -75,15 +82,12 @@ async function generateDataForChunk(
         messages: [
           {
             role: "system",
-            content: `You are an AI that generates fine-tuning datasets for training language models. it should be in jsonl format.
+            content: `You are an AI that generates fine-tuning datasets for training language models. 
                       Summary: ${summary}
-                      Format: {
-  "messages": [
-    {"role": "user", "content": "What does the document say about astrology and personal development?"},
-    {"role": "assistant", "content": "The document explains how astrology uses stars and their positions..."}
-  ]
-}
-`,
+                      Format: {user: ... assistant: ...}
+                      
+                      Generate conversation pairs where the user asks questions about the content and the assistant responds with helpful, accurate information.
+                      Each pair should be clearly marked with "user:" and "assistant:" prefixes.`,
           },
           {
             role: "user",

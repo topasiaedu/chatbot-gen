@@ -16,6 +16,8 @@ import {
 } from "./db/bot_model";
 const fs = require("fs");
 import path from "path";
+import swaggerUi from "swagger-ui-express";
+import swaggerSpec from "./swagger";
 
 dotenv.config();
 
@@ -44,6 +46,15 @@ app.use(cors(corsOptions));
 // Handle preflight (OPTIONS) requests for all routes
 app.options("*", cors(corsOptions));
 
+// Setup Swagger
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
+// Endpoint to get the Swagger specs as JSON
+app.get("/swagger.json", (req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  res.send(swaggerSpec);
+});
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 if (!OPENAI_API_KEY) {
@@ -61,10 +72,47 @@ const client = new OpenAI({
   apiKey: process.env["OPENAI_API_KEY"], // This is the default and can be omitted
 });
 
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: Health check endpoint
+ *     description: Simple endpoint to check if the API is running
+ *     responses:
+ *       200:
+ *         description: Success, returns "Hello World!"
+ */
 app.get("/", (req, res) => {
   res.send("Hello World!");
 });
 
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: Detailed health check
+ *     description: Returns detailed information about the API's health
+ *     responses:
+ *       200:
+ *         description: Success, returns health information
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: "UP"
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 version:
+ *                   type: string
+ *                   example: "1.0.0"
+ *                 uptime:
+ *                   type: number
+ *                   example: 3600
+ */
 app.get("/health", (req, res) => {
   res.status(200).json({
     status: "UP",
@@ -74,6 +122,41 @@ app.get("/health", (req, res) => {
   });
 });
 
+/**
+ * @swagger
+ * /chat:
+ *   post:
+ *     summary: Get chat completions
+ *     description: Send a prompt to OpenAI and get a completion response
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - prompt
+ *             properties:
+ *               prompt:
+ *                 type: string
+ *                 description: The prompt to send to the AI
+ *     responses:
+ *       200:
+ *         description: Success, returns the completion
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 completion:
+ *                   type: string
+ *       400:
+ *         description: Bad request, missing prompt
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/chat", async (req, res) => {
   const { prompt } = req.body;
 
@@ -85,11 +168,86 @@ app.post("/chat", async (req, res) => {
   res.json({ completion });
 });
 
+/**
+ * @swagger
+ * /fine-tune:
+ *   post:
+ *     summary: Start a fine-tuning job
+ *     description: Start a fine-tuning job with the current dataset
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               botId:
+ *                 type: string
+ *                 description: Optional bot ID to associate with the fine-tuning job
+ *     responses:
+ *       200:
+ *         description: Success, returns the fine-tuning job details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 fineTune:
+ *                   type: object
+ *                   description: OpenAI fine-tuning job object
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/fine-tune", async (req, res) => {
-  const fineTune = await fineTuneModel(client);
+  // Get botId from the request if available, but don't require it
+  const { botId } = req.body;
+  
+  const fineTune = await fineTuneModel(client, botId);
   res.json({ fineTune });
 });
 
+/**
+ * @swagger
+ * /fine-tuned-chat:
+ *   post:
+ *     summary: Chat with a fine-tuned model
+ *     description: Send a prompt to a specific fine-tuned model
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - modelId
+ *               - prompt
+ *             properties:
+ *               modelId:
+ *                 type: string
+ *                 description: The ID of the fine-tuned model to use
+ *               prompt:
+ *                 type: string
+ *                 description: The prompt to send to the model
+ *     responses:
+ *       200:
+ *         description: Success, returns the completion
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 completion:
+ *                   type: string
+ *       400:
+ *         description: Bad request, missing required parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/fine-tuned-chat", async (req, res) => {
   const { modelId, prompt } = req.body;
 
@@ -105,6 +263,49 @@ app.post("/fine-tuned-chat", async (req, res) => {
   res.json({ completion });
 });
 
+/**
+ * @swagger
+ * /generate-datasets:
+ *   post:
+ *     summary: Generate datasets from a file
+ *     description: Generate training datasets from a file URL
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - fileUrl
+ *             properties:
+ *               fileUrl:
+ *                 type: string
+ *                 description: URL of the file to process
+ *     responses:
+ *       200:
+ *         description: Success, returns the generated datasets
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 dataSets:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       400:
+ *         description: Bad request, missing fileUrl
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/generate-datasets", async (req, res) => {
   const { fileUrl } = req.body;
 
@@ -120,6 +321,48 @@ app.post("/generate-datasets", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /train-bot:
+ *   post:
+ *     summary: Train a bot
+ *     description: Process bot files, generate datasets, and fine-tune a model for the bot
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - modelId
+ *             properties:
+ *               modelId:
+ *                 type: string
+ *                 description: ID of the bot to train
+ *     responses:
+ *       200:
+ *         description: Success, training started
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Training bot..."
+ *       400:
+ *         description: Bad request, missing modelId
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Not found, bot not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/train-bot", async (req, res) => {
   const { modelId } = req.body;
 
@@ -170,7 +413,7 @@ app.post("/train-bot", async (req, res) => {
   }
 
   // Train the bot with the generated dataset
-  const fineTune = await fineTuneModel(client);
+  const fineTune = await fineTuneModel(client, bot.id);
 
   const versionNumber = (await fetchBotModelCountByBotId(bot.id)) + 1;
 
@@ -187,6 +430,56 @@ app.post("/train-bot", async (req, res) => {
   res.json({ message: "Training bot..." });
 });
 
+/**
+ * @swagger
+ * /chat-with-bot:
+ *   post:
+ *     summary: Chat with a trained bot
+ *     description: Send a prompt to a specific trained bot
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - botId
+ *               - prompt
+ *             properties:
+ *               botId:
+ *                 type: string
+ *                 description: ID of the bot to chat with
+ *               prompt:
+ *                 type: string
+ *                 description: The prompt to send to the bot
+ *               messages:
+ *                 type: array
+ *                 description: Optional chat history
+ *                 items:
+ *                   type: object
+ *     responses:
+ *       200:
+ *         description: Success, returns the completion
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 completion:
+ *                   type: string
+ *       400:
+ *         description: Bad request, missing required parameters or bot not trained
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Not found, bot or model not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/chat-with-bot", async (req, res) => {
   const { botId, prompt, messages } = req.body;
 
@@ -264,4 +557,5 @@ app.use((req: express.Request, res: express.Response) => {
 
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
+  console.log(`API documentation available at http://localhost:${port}/api-docs`);
 });

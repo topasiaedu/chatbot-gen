@@ -14,7 +14,7 @@ export interface FineTuningProgress {
   error?: string;
 }
 
-export async function fineTuneModel(client: OpenAI, botId: string) {
+export async function fineTuneModel(client: OpenAI, botId?: string) {
   if (!client) {
     throw new Error("OpenAI client is not defined");
   }
@@ -31,11 +31,13 @@ export async function fineTuneModel(client: OpenAI, botId: string) {
   const datasetStream = fs.createReadStream(datasetPath);
   
   try {
-    // Update bot status to uploading dataset
-    await updateBot(botId, {
-      status: "uploading_dataset",
-      progress: 0,
-    });
+    // Update bot status to uploading dataset (if botId is provided)
+    if (botId) {
+      await updateBot(botId, {
+        status: "uploading_dataset",
+        progress: 0,
+      });
+    }
 
     const fileUploadResponse = await client.files.create({
       file: datasetStream,
@@ -44,14 +46,18 @@ export async function fineTuneModel(client: OpenAI, botId: string) {
     
     const fileId = fileUploadResponse.id;
 
-    // Update bot status to starting fine-tuning
-    await updateBot(botId, {
-      status: "starting",
-      progress: 10,
-    });
+    // Update bot status to starting fine-tuning (if botId is provided)
+    if (botId) {
+      await updateBot(botId, {
+        status: "starting",
+        progress: 10,
+      });
+    }
 
     // Generate a unique fine-tuning job name
-    const uniqueJobName = `bot-${botId}-finetune-${Date.now()}`;
+    const uniqueJobName = botId 
+      ? `bot-${botId}-finetune-${Date.now()}` 
+      : `standalone-finetune-${Date.now()}`;
 
     // Step 2: Use the file ID to create a fine-tuning job
     const fineTune = await client.fineTuning.jobs.create({
@@ -60,24 +66,28 @@ export async function fineTuneModel(client: OpenAI, botId: string) {
       suffix: uniqueJobName // Adds a unique suffix to ensure a new model is created
     });
 
-    // Update bot with job ID and in-progress status
-    await updateBot(botId, {
-      status: "in_progress",
-      progress: 20,
-    });
-
-    // Start tracking progress
-    trackFineTuningProgress(client, fineTune.id, botId);
+    // Update bot with job ID and in-progress status (if botId is provided)
+    if (botId) {
+      await updateBot(botId, {
+        status: "in_progress",
+        progress: 20,
+      });
+      
+      // Start tracking progress only if we have a botId
+      trackFineTuningProgress(client, fineTune.id, botId);
+    }
   
     return fineTune;
   } catch (error) {
     console.error("Error during fine-tuning process:", (error as Error).message);
     
-    // Update bot with error status
-    await updateBot(botId, {
-      status: "failed",
-      progress: 0,
-    });
+    // Update bot with error status (if botId is provided)
+    if (botId) {
+      await updateBot(botId, {
+        status: "failed",
+        progress: 0,
+      });
+    }
     
     throw error;
   }

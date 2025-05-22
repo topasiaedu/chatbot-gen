@@ -142,3 +142,7 @@ out
 
 # End of https://www.toptal.com/developers/gitignore/api/node
 .qodo
+
+
+# Dist folder
+dist/

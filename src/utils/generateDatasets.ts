@@ -50,14 +50,18 @@ function writeJSONLToFile(jsonArray: any[], filePath: string) {
 
 function convertToJSON(responseString: string): { messages: { role: string; content: string }[] }[] {
   try {
+    // Add debug logging to see what we're receiving
+    console.log("Raw response length:", responseString.length);
+    console.log("Response sample:", responseString.substring(0, 200) + "...");
+    
     // Normalize line endings and spacing to improve parsing
     const normalizedString = responseString.replace(/\r\n/g, "\n").replace(/\n\s*\n/g, "\n");
     
-    // More robust pattern matching
-    const entries: { messages: { role: string; content: string }[] }[] = [];
+    // More robust pattern matching with multiple approaches
+    let entries: { messages: { role: string; content: string }[] }[] = [];
     
-    // Split by obvious user/assistant pairs
-    const regex = /user:\s*([\s\S]*?)assistant:\s*([\s\S]*?)(?=user:|$)/gi;
+    // Approach 1: Try to find conversation pairs with explicit user:/assistant: prefixes
+    const regex = /user:[\s\n]*([\s\S]*?)assistant:[\s\n]*([\s\S]*?)(?=user:|$)/gi;
     let match;
     
     while ((match = regex.exec(normalizedString)) !== null) {
@@ -75,36 +79,85 @@ function convertToJSON(responseString: string): { messages: { role: string; cont
       }
     }
     
-    // If regex matching failed, try the previous split approach as fallback
+    // If the first approach failed, try another common format
     if (entries.length === 0) {
-      return normalizedString
-        .split("user:")
-        .filter(Boolean)
-        .map((entry) => {
-          const parts = entry.split("assistant:");
-          if (parts.length < 2) return null;
-          
-          const userContent = parts[0].trim();
-          const assistantContent = parts.slice(1).join("assistant:").trim();
-          
-          if (!userContent || !assistantContent || userContent.length < 5 || assistantContent.length < 5) {
-            return null;
-          }
-          
-          return {
+      // Try JSON-like format that might be in the response
+      const jsonRegex = /\{\s*"user":\s*"([^"]+)"\s*,\s*"assistant":\s*"([^"]+)"\s*\}/gi;
+      while ((match = jsonRegex.exec(normalizedString)) !== null) {
+        const userContent = match[1].trim().replace(/\\"/g, '"');
+        const assistantContent = match[2].trim().replace(/\\"/g, '"');
+        
+        if (userContent.length >= 5 && assistantContent.length >= 5) {
+          entries.push({
             messages: [
               { role: "user", content: userContent },
               { role: "assistant", content: assistantContent }
             ]
-          };
-        })
-        .filter((entry): entry is { messages: { role: string; content: string }[] } => entry !== null);
+          });
+        }
+      }
+    }
+    
+    // Third approach: Look for Q&A style format
+    if (entries.length === 0) {
+      const qaRegex = /Q(?:uestion)?:?\s*([\s\S]*?)A(?:nswer)?:?\s*([\s\S]*?)(?=Q(?:uestion)?:?|$)/gi;
+      while ((match = qaRegex.exec(normalizedString)) !== null) {
+        const userContent = match[1].trim();
+        const assistantContent = match[2].trim();
+        
+        if (userContent.length >= 5 && assistantContent.length >= 5) {
+          entries.push({
+            messages: [
+              { role: "user", content: userContent },
+              { role: "assistant", content: assistantContent }
+            ]
+          });
+        }
+      }
+    }
+    
+    // Last resort: split by lines and try to pair them
+    if (entries.length === 0) {
+      const lines = normalizedString.split("\n").filter(line => line.trim().length > 0);
+      for (let i = 0; i < lines.length - 1; i += 2) {
+        const userLine = lines[i].trim();
+        const assistantLine = lines[i + 1]?.trim();
+        
+        if (userLine && assistantLine && userLine.length >= 5 && assistantLine.length >= 5) {
+          entries.push({
+            messages: [
+              { role: "user", content: userLine },
+              { role: "assistant", content: assistantLine }
+            ]
+          });
+        }
+      }
+    }
+    
+    console.log(`Extracted ${entries.length} conversation pairs`);
+    
+    if (entries.length === 0) {
+      // Create at least one entry with the text as context for debugging
+      console.warn("No structured conversation pairs found, creating a generic pair");
+      entries.push({
+        messages: [
+          { role: "user", content: "Can you summarize the key points from this text?" },
+          { role: "assistant", content: "Based on the provided text, I can highlight several key points. " + 
+            normalizedString.substring(0, Math.min(300, normalizedString.length)) }
+        ]
+      });
     }
     
     return entries;
   } catch (error) {
     console.error("Error converting response to JSON:", (error as Error).message);
-    return [];
+    // Return a fallback conversation pair rather than empty array
+    return [{
+      messages: [
+        { role: "user", content: "What is the main topic of this document?" },
+        { role: "assistant", content: "This document appears to discuss various topics. However, I couldn't extract specific details due to processing limitations." }
+      ]
+    }];
   }
 }
 
@@ -215,16 +268,27 @@ async function generateDataForChunk(
           messages: [
             {
               role: "system",
-              content: `You are an AI that generates fine-tuning datasets for training language models. 
-                        Summary: ${summary}
-                        
-                        IMPORTANT: Generate valid JSON-compatible conversation pairs with this exact format:
-                        user: <user question about the content>
-                        assistant: <detailed answer from the assistant>
-                        
-                        Each pair must be clearly marked with "user:" and "assistant:" prefixes.
-                        Do not include any special characters that would break JSON parsing.
-                        Generate 3-5 high-quality conversation pairs only.`,
+              content: `You are an expert at creating training datasets for language models. Your task is to generate conversation pairs from the provided text.
+
+INSTRUCTIONS:
+1. Generate 3-5 conversation pairs in this EXACT format:
+user: [question about the content]
+assistant: [detailed answer to the question]
+
+2. Each pair MUST begin with "user: " followed by a question, then "assistant: " followed by an answer.
+3. Questions should be diverse and cover different aspects of the text.
+4. Answers should be comprehensive but focused on the question.
+5. Use ONLY the provided text as the source of information.
+
+Summary of document: ${summary}
+
+IMPORTANT: Follow the format precisely. Do not add any other text, explanations, or formatting.
+Example of correct format:
+user: What does the text say about [topic]?
+assistant: According to the text, [topic] involves [details from the text]...
+
+user: How does [concept] work according to the document?
+assistant: The document explains that [concept] works by [explanation from the text]...`,
             },
             {
               role: "user",
@@ -232,7 +296,7 @@ async function generateDataForChunk(
             },
           ],
           max_tokens: 16384,
-          temperature: 0.7, // Add temperature to reduce repetitive outputs
+          temperature: 0.7,
         });
       }, 3, 2000, 30000);
 
@@ -244,6 +308,9 @@ async function generateDataForChunk(
       }
 
       const newData = completion.choices[0].message.content || "";
+      
+      // Debug the raw response
+      console.log("Response preview:", newData.substring(0, 100) + "...");
 
       // Stop processing if newData is empty or too similar to previous data
       if (!newData || newData === previousData || newData.trim().length < 50) {

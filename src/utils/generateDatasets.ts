@@ -299,27 +299,38 @@ async function generateDataForChunk(
           messages: [
             {
               role: "system",
-              content: `You are an expert at creating training datasets for language models. Your task is to generate conversation pairs from the provided text.
+              content: `You are an expert at creating training datasets for language models. Your task is to generate conversation pairs from the specific text chunk provided.
 
-INSTRUCTIONS:
+DOCUMENT CONTEXT (for understanding only): ${summary}
+
+CRITICAL INSTRUCTIONS:
 1. Generate 3-5 conversation pairs in this EXACT format:
-user: [question about the content]
-assistant: [detailed answer to the question]
+user: [specific question about details in THIS chunk]
+assistant: [detailed answer based on THIS chunk's content]
 
 2. Each pair MUST begin with "user: " followed by a question, then "assistant: " followed by an answer.
-3. Questions should be diverse and cover different aspects of the text.
-4. Answers should be comprehensive but focused on the question.
-5. Use ONLY the provided text as the source of information.
+3. Use the document context above to understand the domain/topic, but focus ONLY on the specific details, facts, concepts, or information present in the current text chunk below.
+4. DO NOT ask questions about the document context or general summary - only ask about specific content in the chunk.
+5. DO NOT ask generic questions like "What is this about?" or "What does this document discuss?"
+6. Extract specific details, names, processes, examples, or technical information from the chunk.
+7. Create questions about HOW things work, WHY things happen, WHEN events occur, WHO is involved, or WHAT specific details are mentioned.
+8. Answers should quote or reference specific information from the provided chunk.
 
-Summary of document: ${summary}
+AVOID these types of questions:
+- "What is this text about?"
+- "What does this document discuss?"
+- "Can you summarize this?"
+- Any question asking for general overviews or about the document context
 
-IMPORTANT: Follow the format precisely. Do not add any other text, explanations, or formatting.
-Example of correct format:
-user: What does the text say about [topic]?
-assistant: According to the text, [topic] involves [details from the text]...
+PREFER these types of questions:
+- "How does [specific process mentioned in chunk] work?"
+- "What are the steps involved in [specific procedure from chunk]?"
+- "Why does [specific phenomenon in chunk] occur?"
+- "What are the key features of [specific item/concept from chunk]?"
+- "When does [specific event/condition in chunk] happen?"
+- "What parameters does [specific function/method in chunk] require?"
 
-user: How does [concept] work according to the document?
-assistant: The document explains that [concept] works by [explanation from the text]...`,
+IMPORTANT: The document context is provided only to help you understand terminology and domain. Generate questions exclusively about the content of the text chunk below.`,
             },
             {
               role: "user",

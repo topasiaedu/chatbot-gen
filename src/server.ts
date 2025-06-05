@@ -401,7 +401,8 @@ app.post("/train-bot", async (req, res) => {
       client,
       botFile.file_url,
       bot.training_breadth,
-      bot.training_depth
+      bot.training_depth,
+      bot.id
     );
 
     fileProcessed++;

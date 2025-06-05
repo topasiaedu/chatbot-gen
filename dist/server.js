@@ -48,6 +48,8 @@ const bot_file_1 = require("./db/bot_file");
 const bot_model_1 = require("./db/bot_model");
 const fs = require("fs");
 const path_1 = __importDefault(require("path"));
+const swagger_ui_express_1 = __importDefault(require("swagger-ui-express"));
+const swagger_1 = __importDefault(require("./swagger"));
 dotenv.config();
 const app = (0, express_1.default)();
 const port = process.env.PORT || 8000;
@@ -70,6 +72,13 @@ const corsOptions = {
 app.use((0, cors_1.default)(corsOptions));
 // Handle preflight (OPTIONS) requests for all routes
 app.options("*", (0, cors_1.default)(corsOptions));
+// Setup Swagger
+app.use("/api-docs", swagger_ui_express_1.default.serve, swagger_ui_express_1.default.setup(swagger_1.default));
+// Endpoint to get the Swagger specs as JSON
+app.get("/swagger.json", (req, res) => {
+    res.setHeader("Content-Type", "application/json");
+    res.send(swagger_1.default);
+});
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 if (!OPENAI_API_KEY) {
     console.error("Missing OpenAI API key");
@@ -78,9 +87,46 @@ if (!OPENAI_API_KEY) {
 const client = new openai_1.default({
     apiKey: process.env["OPENAI_API_KEY"], // This is the default and can be omitted
 });
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: Health check endpoint
+ *     description: Simple endpoint to check if the API is running
+ *     responses:
+ *       200:
+ *         description: Success, returns "Hello World!"
+ */
 app.get("/", (req, res) => {
     res.send("Hello World!");
 });
+/**
+ * @swagger
+ * /health:
+ *   get:
+ *     summary: Detailed health check
+ *     description: Returns detailed information about the API's health
+ *     responses:
+ *       200:
+ *         description: Success, returns health information
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   example: "UP"
+ *                 timestamp:
+ *                   type: string
+ *                   format: date-time
+ *                 version:
+ *                   type: string
+ *                   example: "1.0.0"
+ *                 uptime:
+ *                   type: number
+ *                   example: 3600
+ */
 app.get("/health", (req, res) => {
     res.status(200).json({
         status: "UP",
@@ -89,6 +135,41 @@ app.get("/health", (req, res) => {
         uptime: process.uptime()
     });
 });
+/**
+ * @swagger
+ * /chat:
+ *   post:
+ *     summary: Get chat completions
+ *     description: Send a prompt to OpenAI and get a completion response
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - prompt
+ *             properties:
+ *               prompt:
+ *                 type: string
+ *                 description: The prompt to send to the AI
+ *     responses:
+ *       200:
+ *         description: Success, returns the completion
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 completion:
+ *                   type: string
+ *       400:
+ *         description: Bad request, missing prompt
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/chat", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { prompt } = req.body;
     if (!prompt) {
@@ -97,10 +178,84 @@ app.post("/chat", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const completion = yield (0, chatCompletions_1.getChatCompletions)(client, prompt);
     res.json({ completion });
 }));
+/**
+ * @swagger
+ * /fine-tune:
+ *   post:
+ *     summary: Start a fine-tuning job
+ *     description: Start a fine-tuning job with the current dataset
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               botId:
+ *                 type: string
+ *                 description: Optional bot ID to associate with the fine-tuning job
+ *     responses:
+ *       200:
+ *         description: Success, returns the fine-tuning job details
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 fineTune:
+ *                   type: object
+ *                   description: OpenAI fine-tuning job object
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/fine-tune", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const fineTune = yield (0, fineTuning_1.fineTuneModel)(client);
+    // Get botId from the request if available, but don't require it
+    const { botId } = req.body;
+    const fineTune = yield (0, fineTuning_1.fineTuneModel)(client, botId);
     res.json({ fineTune });
 }));
+/**
+ * @swagger
+ * /fine-tuned-chat:
+ *   post:
+ *     summary: Chat with a fine-tuned model
+ *     description: Send a prompt to a specific fine-tuned model
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - modelId
+ *               - prompt
+ *             properties:
+ *               modelId:
+ *                 type: string
+ *                 description: The ID of the fine-tuned model to use
+ *               prompt:
+ *                 type: string
+ *                 description: The prompt to send to the model
+ *     responses:
+ *       200:
+ *         description: Success, returns the completion
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 completion:
+ *                   type: string
+ *       400:
+ *         description: Bad request, missing required parameters
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/fine-tuned-chat", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { modelId, prompt } = req.body;
     if (!modelId) {
@@ -112,6 +267,49 @@ app.post("/fine-tuned-chat", (req, res) => __awaiter(void 0, void 0, void 0, fun
     const completion = yield (0, fineTunedChat_1.getFineTunedChat)(client, modelId, prompt);
     res.json({ completion });
 }));
+/**
+ * @swagger
+ * /generate-datasets:
+ *   post:
+ *     summary: Generate datasets from a file
+ *     description: Generate training datasets from a file URL
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - fileUrl
+ *             properties:
+ *               fileUrl:
+ *                 type: string
+ *                 description: URL of the file to process
+ *     responses:
+ *       200:
+ *         description: Success, returns the generated datasets
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 dataSets:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *       400:
+ *         description: Bad request, missing fileUrl
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       500:
+ *         description: Internal server error
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/generate-datasets", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { fileUrl } = req.body;
     if (!fileUrl) {
@@ -125,6 +323,48 @@ app.post("/generate-datasets", (req, res) => __awaiter(void 0, void 0, void 0, f
         res.status(500).json({ error: error.message });
     }
 }));
+/**
+ * @swagger
+ * /train-bot:
+ *   post:
+ *     summary: Train a bot
+ *     description: Process bot files, generate datasets, and fine-tune a model for the bot
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - modelId
+ *             properties:
+ *               modelId:
+ *                 type: string
+ *                 description: ID of the bot to train
+ *     responses:
+ *       200:
+ *         description: Success, training started
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: "Training bot..."
+ *       400:
+ *         description: Bad request, missing modelId
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Not found, bot not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/train-bot", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { modelId } = req.body;
     console.log("modelId", modelId);
@@ -153,7 +393,7 @@ app.post("/train-bot", (req, res) => __awaiter(void 0, void 0, void 0, function*
         yield (0, bot_1.updateBot)(bot.id, { progress });
     }
     // Train the bot with the generated dataset
-    const fineTune = yield (0, fineTuning_1.fineTuneModel)(client);
+    const fineTune = yield (0, fineTuning_1.fineTuneModel)(client, bot.id);
     const versionNumber = (yield (0, bot_model_1.fetchBotModelCountByBotId)(bot.id)) + 1;
     // Create bot model with the fine-tuned model ID
     const botModel = yield (0, bot_model_1.createBotModel)({
@@ -165,6 +405,56 @@ app.post("/train-bot", (req, res) => __awaiter(void 0, void 0, void 0, function*
     yield (0, bot_1.updateBot)(bot.id, { status: "TRAINED", active_version: botModel.id });
     res.json({ message: "Training bot..." });
 }));
+/**
+ * @swagger
+ * /chat-with-bot:
+ *   post:
+ *     summary: Chat with a trained bot
+ *     description: Send a prompt to a specific trained bot
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - botId
+ *               - prompt
+ *             properties:
+ *               botId:
+ *                 type: string
+ *                 description: ID of the bot to chat with
+ *               prompt:
+ *                 type: string
+ *                 description: The prompt to send to the bot
+ *               messages:
+ *                 type: array
+ *                 description: Optional chat history
+ *                 items:
+ *                   type: object
+ *     responses:
+ *       200:
+ *         description: Success, returns the completion
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 completion:
+ *                   type: string
+ *       400:
+ *         description: Bad request, missing required parameters or bot not trained
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ *       404:
+ *         description: Not found, bot or model not found
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/Error'
+ */
 app.post("/chat-with-bot", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
     const { botId, prompt, messages } = req.body;
     if (!botId) {
@@ -220,4 +510,5 @@ app.use((req, res) => {
 });
 app.listen(port, () => {
     console.log(`Server is running on http://localhost:${port}`);
+    console.log(`API documentation available at http://localhost:${port}/api-docs`);
 });

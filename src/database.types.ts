@@ -9,6 +9,41 @@ export type Json =
 export type Database = {
   public: {
     Tables: {
+      chat_messages: {
+        Row: {
+          bot_id: string
+          created_at: string
+          id: string
+          message_text: string
+          sender: string
+          user_email: string
+        }
+        Insert: {
+          bot_id: string
+          created_at?: string
+          id?: string
+          message_text: string
+          sender: string
+          user_email: string
+        }
+        Update: {
+          bot_id?: string
+          created_at?: string
+          id?: string
+          message_text?: string
+          sender?: string
+          user_email?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "chat_messages_bot_id_fkey"
+            columns: ["bot_id"]
+            isOneToOne: false
+            referencedRelation: "bots"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       bot_files: {
         Row: {
           bot_id: string

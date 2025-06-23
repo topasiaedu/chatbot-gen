@@ -1,11 +1,14 @@
 import OpenAI from "openai";
+import { saveChatMessage } from "../db/chat_message";
 
 export async function getFineTunedChat(
   client: OpenAI,
   modelId: string,
   prompt: string,
   description?: string | null,
-  messages?: any[]
+  messages?: any[],
+  userEmail?: string,
+  botId?: string
 ) {
   if (!client) {
     throw new Error("OpenAI client is not defined");
@@ -45,5 +48,31 @@ export async function getFineTunedChat(
     ],
   });
 
-  return completion.choices[0].message.content;
+  const botResponse = completion.choices[0].message.content;
+
+  // Save chat messages to database if email and botId are provided
+  if (userEmail && botId && botResponse) {
+    try {
+      // Save user message
+      await saveChatMessage({
+        bot_id: botId,
+        user_email: userEmail,
+        sender: "user",
+        message_text: prompt,
+      });
+
+      // Save bot response
+      await saveChatMessage({
+        bot_id: botId,
+        user_email: userEmail,
+        sender: "bot",
+        message_text: botResponse,
+      });
+    } catch (error) {
+      // Log the error but don't fail the chat response
+      console.error("Failed to save chat messages:", error);
+    }
+  }
+
+  return botResponse;
 }

@@ -436,7 +436,7 @@ app.post("/train-bot", async (req, res) => {
  * /chat-with-bot:
  *   post:
  *     summary: Chat with a trained bot
- *     description: Send a prompt to a specific trained bot
+ *     description: Send a prompt to a specific trained bot. Chat messages will be saved to database if email is provided.
  *     requestBody:
  *       required: true
  *       content:
@@ -453,11 +453,23 @@ app.post("/train-bot", async (req, res) => {
  *               prompt:
  *                 type: string
  *                 description: The prompt to send to the bot
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 description: User's email address (optional, used for saving chat history)
  *               messages:
  *                 type: array
  *                 description: Optional chat history
  *                 items:
  *                   type: object
+ *                   properties:
+ *                     text:
+ *                       type: string
+ *                       description: The message text
+ *                     sender:
+ *                       type: string
+ *                       enum: [user, bot]
+ *                       description: Who sent the message
  *     responses:
  *       200:
  *         description: Success, returns the completion
@@ -482,7 +494,7 @@ app.post("/train-bot", async (req, res) => {
  *               $ref: '#/components/schemas/Error'
  */
 app.post("/chat-with-bot", async (req, res) => {
-  const { botId, prompt, messages } = req.body;
+  const { botId, prompt, messages, email } = req.body;
 
   if (!botId) {
     return res.status(400).json({ error: "Missing botId" });
@@ -517,7 +529,9 @@ app.post("/chat-with-bot", async (req, res) => {
     botModel.open_ai_id,
     prompt,
     bot.description,
-    messages
+    messages,
+    email,     // 👈 Pass email for chat history saving
+    botId      // 👈 Pass botId for chat history saving
   );
   res.json({ completion });
 });

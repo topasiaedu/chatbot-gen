@@ -111,6 +111,38 @@ const swaggerOptions = {
             },
           },
         },
+        ChatMessage: {
+          type: "object",
+          properties: {
+            id: {
+              type: "string",
+              description: "Unique identifier for the message",
+            },
+            bot_id: {
+              type: "string",
+              description: "ID of the bot involved in the conversation",
+            },
+            user_email: {
+              type: "string",
+              format: "email",
+              description: "Email of the user who sent/received the message",
+            },
+            sender: {
+              type: "string",
+              enum: ["user", "bot"],
+              description: "Who sent the message",
+            },
+            message_text: {
+              type: "string",
+              description: "The actual message content",
+            },
+            created_at: {
+              type: "string",
+              format: "date-time",
+              description: "When the message was created",
+            },
+          },
+        },
         Error: {
           type: "object",
           properties: {

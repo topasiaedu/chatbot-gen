@@ -1,6 +1,6 @@
 import OpenAI from "openai";
 import { extractTextFromFileUrl } from "./files";
-import { encode } from "gpt-3-encoder"; // Import the GPT-3 encoder to handle token counting
+import { encode, decode } from "gpt-3-encoder"; // Import encoder and decoder for token handling
 const fs = require("fs");
 
 function writeJSONLToFile(jsonArray: any[], filePath: string) {
@@ -237,9 +237,9 @@ function splitTextIntoChunks(text: string, tokensPerChunk: number = 500): string
   return chunks;
 }
 
-// Simple token decoder placeholder (modify based on encoding method)
+// Decode token IDs back into their original string values
 function decodeTokens(tokens: number[]): string {
-  return tokens.join(" "); // Adjust decoding logic if necessary
+  return decode(tokens);
 }
 
 // Add a new utility function for API call retries with exponential backoff

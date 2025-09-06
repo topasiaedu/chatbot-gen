@@ -97,6 +97,48 @@ Body: { "fileUrl": "url-to-file" }
 ```
 Generate training datasets from a file URL.
 
+### Chat with Transcriptions
+```
+POST /chat-with-transcriptions
+Body: {
+  "prompt": "Your question",
+  "transcriptionUrls": [
+    "https://<your-project>.supabase.co/storage/v1/object/public/transcription/result/<taskId>.txt"
+  ],
+  "messages": [{ "role": "user", "content": "previous message" }]
+}
+```
+Uses one or more public transcription result files as context and returns an answer. Messages are optional; frontend is responsible for chat history storage.
+
+## Realtime Transcription Processing
+
+When the frontend uploads a media file to the public bucket `transcription/medias/...` and then inserts a row into `public.transciption_task` with `media_url` (full public URL), the server subscribes to realtime changes and automatically processes new tasks using OpenAI Whisper and stores the plain text result at `transcription/result/<taskId>.txt`.
+
+### Environment variables
+
+Add the following to `.env`:
+```
+OPENAI_API_KEY="..."
+SUPABASE_URL="..."
+SUPABASE_SERVICE_KEY="..."
+TRANSCRIPTION_BUCKET_NAME="transcription"
+```
+
+### Storage layout
+
+- Bucket: `transcription` (public)
+- Upload media to: `medias/<anything>/<fileName>`
+- Server writes results to: `result/<taskId>.txt` and saves the full public URL in `public.transciption_task.result_url`.
+
+### Database contract
+
+- Frontend inserts into `public.transciption_task` after uploading media:
+  - `id`: UUID (server listens for INSERT)
+  - `media_url`: full public URL to the uploaded media
+  - `result_url`: initially null (server fills after processing)
+
+Language is auto-detected by Whisper and can return Chinese text.
+
 ## Training Process
 
 The bot training process involves these steps:

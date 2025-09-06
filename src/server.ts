@@ -18,6 +18,8 @@ const fs = require("fs");
 import path from "path";
 import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./swagger";
+import { initTranscriptionRealtime, startTranscriptionPolling } from "./realtime/transcription";
+import { extractTextFromFileUrl } from "./utils/files";
 
 dotenv.config();
 
@@ -72,6 +74,11 @@ const client = new OpenAI({
   apiKey: process.env["OPENAI_API_KEY"], // This is the default and can be omitted
 });
 
+// Initialize realtime transcription listener
+const TRANSCRIPTION_BUCKET = process.env.TRANSCRIPTION_BUCKET_NAME || "transcription";
+const stopTranscriptionRealtime = initTranscriptionRealtime(client, TRANSCRIPTION_BUCKET);
+const stopTranscriptionPolling = startTranscriptionPolling(client, TRANSCRIPTION_BUCKET, 30000);
+
 /**
  * @swagger
  * /:
@@ -84,6 +91,87 @@ const client = new OpenAI({
  */
 app.get("/", (req, res) => {
   res.send("Hello World!");
+});
+
+/**
+ * @swagger
+ * /chat-with-transcriptions:
+ *   post:
+ *     summary: Chat with context from selected transcription files
+ *     description: Includes the given transcription results as system/context messages
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - prompt
+ *               - transcriptionUrls
+ *             properties:
+ *               prompt:
+ *                 type: string
+ *               transcriptionUrls:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               messages:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     role:
+ *                       type: string
+ *                       enum: [user, assistant, system]
+ *                     content:
+ *                       type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+app.post("/chat-with-transcriptions", async (req, res) => {
+  const { prompt, transcriptionUrls, messages } = req.body as {
+    prompt?: string;
+    transcriptionUrls?: string[];
+    messages?: { role: "user" | "assistant" | "system"; content: string }[];
+  };
+
+  if (!prompt) {
+    return res.status(400).json({ error: "Missing prompt" });
+  }
+  if (!Array.isArray(transcriptionUrls) || transcriptionUrls.length === 0) {
+    return res.status(400).json({ error: "Missing transcriptionUrls" });
+  }
+
+  // Fetch transcript texts from public URLs
+  const transcriptTexts: string[] = [];
+  for (const url of transcriptionUrls) {
+    try {
+      const text = await extractTextFromFileUrl(url);
+      transcriptTexts.push(text);
+    } catch (e) {
+      return res.status(400).json({ error: `Failed to fetch transcription: ${(e as any).message}` });
+    }
+  }
+
+  const systemContext = `You are a helpful assistant. You are provided with one or more transcript documents. Use them to answer the user's question. If the answer is not in the transcripts, say you don't know.`;
+  const contextMessages: { role: "system"; content: string }[] = transcriptTexts.map((t, i) => ({ role: "system", content: `Transcript ${i + 1}:\n${t}` }));
+
+  const sanitizedHistory: { role: "user" | "assistant" | "system"; content: string }[] = Array.isArray(messages)
+    ? messages.filter((m) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant" || m.role === "system"))
+    : [];
+
+  const completion = await client.chat.completions.create({
+    model: "gpt-4o-mini-2024-07-18",
+    messages: [
+      { role: "system", content: systemContext },
+      ...contextMessages,
+      ...sanitizedHistory,
+      { role: "user", content: prompt },
+    ],
+  });
+
+  res.json({ completion: completion.choices[0]?.message?.content ?? "" });
 });
 
 /**

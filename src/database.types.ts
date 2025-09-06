@@ -205,6 +205,7 @@ export type Database = {
           id: string
           media_url: string | null
           openai_task_id: string | null
+          progress: string | null
           result_url: string | null
           status: string | null
         }
@@ -215,6 +216,7 @@ export type Database = {
           id?: string
           media_url?: string | null
           openai_task_id?: string | null
+          progress?: string | null
           result_url?: string | null
           status?: string | null
         }
@@ -225,6 +227,7 @@ export type Database = {
           id?: string
           media_url?: string | null
           openai_task_id?: string | null
+          progress?: string | null
           result_url?: string | null
           status?: string | null
         }
@@ -234,6 +237,41 @@ export type Database = {
             columns: ["folder_id"]
             isOneToOne: false
             referencedRelation: "transcription_folders"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      transcription_chat_messages: {
+        Row: {
+          conversation_id: string | null
+          created_at: string | null
+          id: string
+          message_text: string
+          sender: string
+          user_email: string
+        }
+        Insert: {
+          conversation_id?: string | null
+          created_at?: string | null
+          id?: string
+          message_text: string
+          sender: string
+          user_email: string
+        }
+        Update: {
+          conversation_id?: string | null
+          created_at?: string | null
+          id?: string
+          message_text?: string
+          sender?: string
+          user_email?: string
+        }
+        Relationships: [
+          {
+            foreignKeyName: "transcription_chat_messages_conversation_id_fkey"
+            columns: ["conversation_id"]
+            isOneToOne: false
+            referencedRelation: "conversations"
             referencedColumns: ["id"]
           },
         ]

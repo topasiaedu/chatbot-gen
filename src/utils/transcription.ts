@@ -6,6 +6,9 @@ import OpenAI from "openai";
 import supabase from "../db/supabaseClient";
 import logger from "./logger";
 import { uploadErrorReport, type TranscriptionPhase } from "./transcriptionDiagnostics";
+import { updateTranscriptionTask } from "../db/transcription";
+import { spawn } from "child_process";
+import ffmpegPath from "ffmpeg-static";
 
 /**
  * Downloads a public URL to a temporary file path.
@@ -59,22 +62,50 @@ export type TranscribeOptions = {
   mediaUrl: string;
 };
 
+export type TranscriptionProgress =
+  | { phase: "download_start" }
+  | { phase: "download_done" }
+  | { phase: "transcribe_start" }
+  | { phase: "transcribe_done"; ms: number; chars: number }
+  | { phase: "upload_start" }
+  | { phase: "upload_done"; url: string };
+
 /**
  * Transcribes a media file using Whisper with automatic language detection (supports Chinese),
  * and uploads the transcription as text to the Supabase bucket.
  */
 export async function transcribeMediaWithOpenAI(
   client: OpenAI,
-  opts: TranscribeOptions
+  opts: TranscribeOptions,
+  onProgress?: (p: TranscriptionProgress) => Promise<void> | void
 ): Promise<{ resultUrl: string; openaiTaskId?: string }> {
   if (!opts.mediaUrl) {
     throw new Error("mediaUrl is required");
   }
 
+  if (onProgress) await onProgress({ phase: "download_start" });
   const tempPath = await downloadToTempFile(opts.mediaUrl);
+  const tempDir = path.join(os.tmpdir(), `chunks-${opts.taskId}-${Date.now()}`);
+  fs.mkdirSync(tempDir, { recursive: true });
   try {
-    logger.info("Starting Whisper transcription", { phase: "transcribe", taskId: opts.taskId });
-    const fileStream = fs.createReadStream(tempPath);
+    if (onProgress) await onProgress({ phase: "download_done" });
+    // Segment media (audio or video) into 60s chunks and transcode to mono 16kHz mp3 for consistency
+    const segmentSeconds: number = Number.parseInt(process.env.CHUNK_DURATION_SECONDS || "60", 10);
+    const chunkPaths = await splitMediaIntoChunks(tempPath, tempDir, segmentSeconds);
+    const totalChunks = chunkPaths.length;
+    if (totalChunks === 0) {
+      throw new Error("No chunks produced by ffmpeg");
+    }
+
+    // Initialize progress
+    try {
+      await updateTranscriptionTask(opts.taskId, { status: "PROCESSING", progress: `0/${totalChunks}` });
+    } catch {}
+
+    // Concurrency-limited processing
+    const concurrency: number = Math.max(1, Number.parseInt(process.env.CHUNK_CONCURRENCY || "3", 10));
+    const results: string[] = new Array(totalChunks).fill("");
+    let completed = 0;
 
     const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
       return new Promise<T>((resolve, reject) => {
@@ -92,27 +123,52 @@ export async function transcribeMediaWithOpenAI(
       });
     };
 
-    const t0 = Date.now();
-    const transcription = await withTimeout(
-      client.audio.transcriptions.create({
-        model: "whisper-1",
-        file: fileStream,
-        // language omitted => auto-detect, supports Chinese
-        response_format: "text",
-        temperature: 0,
-      }),
-      180_000
-    );
-    const transcribeMs = Date.now() - t0;
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex;
+        nextIndex += 1;
+        if (i >= totalChunks) return;
+        const chunkPath = chunkPaths[i];
+        logger.info("Transcribing chunk", { taskId: opts.taskId, index: i + 1, total: totalChunks });
+        const fileStream = fs.createReadStream(chunkPath);
+        const transcription = await withTimeout(
+          client.audio.transcriptions.create({
+            model: "whisper-1",
+            file: fileStream,
+            response_format: "text",
+            temperature: 0,
+          }),
+          Number.parseInt(process.env.TRANSCRIBE_TIMEOUT_MS || "900000", 10)
+        );
+        const text = (typeof transcription === "string") ? transcription : (transcription as { text?: string }).text ?? "";
+        results[i] = text;
+        completed += 1;
+        const progressStr = `${completed}/${totalChunks}`;
+        try {
+          await updateTranscriptionTask(opts.taskId, { progress: progressStr, status: completed === totalChunks ? "PROCESSING:UPLOADING" : "PROCESSING:TRANSCRIBING" });
+        } catch {}
+      }
+    };
 
-    const text = (typeof transcription === "string") ? transcription : (transcription as { text?: string }).text ?? "";
-    if (text.length === 0) {
-      throw new Error("Transcription returned empty text");
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < Math.min(concurrency, totalChunks); w += 1) {
+      workers.push(worker());
     }
-    logger.info("Whisper finished", { phase: "transcribe", taskId: opts.taskId, chars: text.length, transcribeMs });
+    await Promise.all(workers);
 
-    const resultUrl = await uploadResultText(opts.bucketName, opts.taskId, text);
+    const mergedText = results.join("\n\n");
+    if (mergedText.trim().length === 0) {
+      throw new Error("Merged transcription is empty");
+    }
+
+    if (onProgress) await onProgress({ phase: "upload_start" });
+    const resultUrl = await uploadResultText(opts.bucketName, opts.taskId, mergedText);
     logger.info("Result uploaded", { phase: "upload", url: resultUrl, taskId: opts.taskId });
+    try {
+      await updateTranscriptionTask(opts.taskId, { progress: `${totalChunks}/${totalChunks}`, status: "COMPLETED" });
+    } catch {}
+    if (onProgress) await onProgress({ phase: "upload_done", url: resultUrl });
     return { resultUrl };
   } catch (error) {
     const err = error as Error;
@@ -131,11 +187,56 @@ export async function transcribeMediaWithOpenAI(
     logger.error("Transcription failed", { taskId: opts.taskId }, err);
     throw err;
   } finally {
+    try {
+      if (fs.existsSync(tempDir)) {
+        const files = fs.readdirSync(tempDir);
+        for (const f of files) {
+          const p = path.join(tempDir, f);
+          try { fs.unlinkSync(p); } catch {}
+        }
+        try { fs.rmdirSync(tempDir); } catch {}
+      }
+    } catch {}
     if (fs.existsSync(tempPath)) {
-      fs.unlinkSync(tempPath);
+      try { fs.unlinkSync(tempPath); } catch {}
       logger.info("Cleaned up temp file", { phase: "download", tempFilePath: tempPath });
     }
   }
+}
+
+async function splitMediaIntoChunks(inputPath: string, outDir: string, segmentSeconds: number): Promise<string[]> {
+  const pattern = path.join(outDir, "chunk-%05d.mp3");
+  const args: string[] = [
+    "-hide_banner",
+    "-loglevel", "error",
+    "-i", inputPath,
+    "-vn", // drop video; extract audio only
+    "-ac", "1", // mono
+    "-ar", "16000", // 16kHz for Whisper efficiency
+    "-f", "segment",
+    "-segment_time", String(segmentSeconds),
+    "-c:a", "libmp3lame",
+    pattern,
+  ];
+  await runFfmpeg(args);
+  const files = fs.readdirSync(outDir)
+    .filter((f) => f.startsWith("chunk-") && f.endsWith(".mp3"))
+    .sort();
+  return files.map((f) => path.join(outDir, f));
+}
+
+function runFfmpeg(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const bin = (ffmpegPath as unknown as string) || "ffmpeg";
+    const proc = spawn(bin, args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stderr = "";
+    proc.stderr?.on("data", (d) => { stderr += d.toString(); });
+    proc.on("error", (e) => reject(e));
+    proc.on("close", (code) => {
+      if (code === 0) resolve();
+      else reject(new Error(`ffmpeg exited with code ${code}: ${stderr}`));
+    });
+  });
 }
 
 

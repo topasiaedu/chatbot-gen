@@ -58,6 +58,23 @@ export function initTranscriptionRealtime(client: OpenAI, bucketName: string): (
                 bucketName,
                 taskId: task.id,
                 mediaUrl: task.media_url,
+              }, async (p) => {
+                // Persist coarse progress into status column if available
+                try {
+                  if (p.phase === "download_start") {
+                    await updateTranscriptionTask(task.id, { status: "PROCESSING:DOWNLOADING" });
+                  } else if (p.phase === "download_done") {
+                    await updateTranscriptionTask(task.id, { status: "PROCESSING:DOWNLOADED" });
+                  } else if (p.phase === "transcribe_start") {
+                    await updateTranscriptionTask(task.id, { status: "PROCESSING:TRANSCRIBING" });
+                  } else if (p.phase === "transcribe_done") {
+                    await updateTranscriptionTask(task.id, { status: "PROCESSING:UPLOADING" });
+                  } else if (p.phase === "upload_done") {
+                    await updateTranscriptionTask(task.id, { status: "COMPLETED" });
+                  }
+                } catch (e) {
+                  // Best-effort; ignore if status column is missing
+                }
               });
               await updateTranscriptionTask(task.id, { result_url: resultUrl, openai_task_id: openaiTaskId ?? runId, status: "COMPLETED" });
               logger.info("Task updated with result_url", { taskId });

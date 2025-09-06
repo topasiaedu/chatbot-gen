@@ -20,6 +20,8 @@ import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./swagger";
 import { initTranscriptionRealtime, startTranscriptionPolling } from "./realtime/transcription";
 import { extractTextFromFileUrl } from "./utils/files";
+import { fetchTranscriptionTask } from "./db/transcription";
+import supabase from "./db/supabaseClient";
 
 dotenv.config();
 
@@ -91,6 +93,69 @@ const stopTranscriptionPolling = startTranscriptionPolling(client, TRANSCRIPTION
  */
 app.get("/", (req, res) => {
   res.send("Hello World!");
+});
+
+/**
+ * @swagger
+ * /transcriptions/{id}:
+ *   get:
+ *     summary: Get transcription task status
+ *     description: Returns the current status of the transcription task and recent error reports
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         schema:
+ *           type: string
+ *         required: true
+ *         description: The transcription task ID
+ *     responses:
+ *       200:
+ *         description: Success
+ *       404:
+ *         description: Task not found
+ */
+app.get("/transcriptions/:id", async (req, res) => {
+  const taskId: string = req.params.id;
+  try {
+    // Fetch the task row from DB
+    const task = await fetchTranscriptionTask(taskId);
+
+    // Derive status if column is missing or null
+    const derivedStatus: string = (() => {
+      const s = (task as { status?: string | null }).status ?? null;
+      if (typeof s === "string" && s.length > 0) return s;
+      const resultUrl = (task as { result_url?: string | null }).result_url ?? null;
+      if (resultUrl === null) return "PENDING";
+      if (typeof resultUrl === "string" && resultUrl.startsWith("processing:")) return "PROCESSING";
+      return "COMPLETED";
+    })();
+
+    // List recent error reports for this task from storage
+    const listResp = await supabase.storage
+      .from(TRANSCRIPTION_BUCKET)
+      .list("errors", {
+        limit: 10,
+        sortBy: { column: "created_at", order: "desc" },
+        search: taskId,
+      });
+
+    const errorReports: string[] = Array.isArray(listResp.data)
+      ? listResp.data
+          .filter((f) => typeof f.name === "string" && f.name.includes(taskId))
+          .map((f) => supabase.storage.from(TRANSCRIPTION_BUCKET).getPublicUrl(`errors/${f.name}`).data.publicUrl)
+      : [];
+
+    res.json({
+      id: task.id,
+      status: derivedStatus,
+      mediaUrl: task.media_url,
+      resultUrl: task.result_url,
+      openaiTaskId: task.openai_task_id,
+      errorReports,
+    });
+  } catch (e) {
+    res.status(404).json({ error: (e as Error).message });
+  }
 });
 
 /**

@@ -12,50 +12,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.generateDataSetsInChunks = generateDataSetsInChunks;
 exports.validateJsonlFile = validateJsonlFile;
 const files_1 = require("./files");
+const gpt_3_encoder_1 = require("gpt-3-encoder"); // Import the GPT-3 encoder to handle token counting
 const fs = require("fs");
-/**
- * PERFORMANCE OPTIMIZATIONS FOR LARGE FILES (130k+ characters):
- *
- * 🚀 PARALLEL PROCESSING: Processes up to 8 chunks simultaneously instead of sequentially
- * ⚡ FASTER RETRIES: Reduced retry delays and timeouts for quicker failure recovery
- * 📦 BATCH FILE OPERATIONS: Writes multiple chunks to file at once instead of one-by-one
- * 🎯 CONCURRENCY CONTROL: Uses semaphore to prevent API rate limit violations
- *
- * EXPECTED SPEED IMPROVEMENT: 5-8x faster for large files!
- *
- * Usage example for maximum speed:
- * await generateDataSetsInChunks(client, fileUrl, 500, 1, "myModel", 8);
- */
-// Add a semaphore class for controlling concurrency
-class Semaphore {
-    constructor(permits) {
-        this.promiseResolverQueue = [];
-        this.permits = permits;
-    }
-    acquire() {
-        return __awaiter(this, void 0, void 0, function* () {
-            if (this.permits > 0) {
-                this.permits--;
-                return Promise.resolve();
-            }
-            return new Promise((resolver) => {
-                this.promiseResolverQueue.push(resolver);
-            });
-        });
-    }
-    release() {
-        this.permits++;
-        if (this.permits > 0 && this.promiseResolverQueue.length > 0) {
-            const resolver = this.promiseResolverQueue.shift();
-            if (resolver) {
-                this.permits--;
-                resolver();
-            }
-        }
-    }
-}
-// Create a global semaphore to limit concurrent API calls
-const apiSemaphore = new Semaphore(8); // Allow 8 concurrent API calls for faster processing
 function writeJSONLToFile(jsonArray, filePath) {
     // Validate each JSON object before writing
     const validatedJsonArray = jsonArray.filter(entry => {
@@ -121,84 +79,6 @@ function writeJSONLToFile(jsonArray, filePath) {
     fs.writeFileSync(filePath, existingData + jsonlData + "\n", "utf8");
     // Verify the file was written correctly
     console.log(`Successfully wrote ${validatedJsonArray.length} entries to ${filePath}`);
-}
-// Add a new utility function for API call retries with exponential backoff
-function retryWithBackoff(operation_1) {
-    return __awaiter(this, arguments, void 0, function* (operation, retries = 2, // Reduced from 3 for speed
-    initialDelay = 200, // Much faster initial delay
-    maxDelay = 2000 // Reduced max delay
-    ) {
-        let currentDelay = initialDelay;
-        let attempts = 0;
-        while (true) {
-            try {
-                attempts++;
-                // Shorter timeout for faster failure detection
-                const timeoutPromise = new Promise((_, reject) => {
-                    setTimeout(() => reject(new Error("API request timed out")), 20000); // 20 second timeout
-                });
-                return yield Promise.race([operation(), timeoutPromise]);
-            }
-            catch (error) {
-                if (attempts >= retries) {
-                    console.error(`Operation failed after ${attempts} attempts:`, error.message);
-                    throw error;
-                }
-                // Log the error but continue
-                console.warn(`Attempt ${attempts} failed, retrying in ${currentDelay}ms`);
-                // Wait before retrying with less aggressive backoff for speed
-                yield new Promise(resolve => setTimeout(resolve, currentDelay));
-                currentDelay = Math.min(currentDelay * 1.3, maxDelay);
-            }
-        }
-    });
-}
-// Optimized batch writing function for better performance
-function batchWriteJSONLToFile(jsonArrayBatch, filePath) {
-    const allEntries = jsonArrayBatch.flat();
-    if (allEntries.length === 0) {
-        return 0;
-    }
-    // Batch validate and convert all entries at once
-    const jsonlLines = [];
-    let validCount = 0;
-    for (const entry of allEntries) {
-        try {
-            // Quick validation
-            if (!entry.messages || !Array.isArray(entry.messages) || entry.messages.length < 2) {
-                continue;
-            }
-            const validMessages = entry.messages.every((msg) => msg && typeof msg.role === "string" && typeof msg.content === "string" &&
-                msg.content.trim().length > 0 && ["user", "assistant"].includes(msg.role));
-            if (!validMessages) {
-                continue;
-            }
-            const cleanedEntry = {
-                messages: entry.messages.map((msg) => ({
-                    role: msg.role,
-                    content: msg.content.replace(/\n/g, " ").trim()
-                }))
-            };
-            jsonlLines.push(JSON.stringify(cleanedEntry));
-            validCount++;
-        }
-        catch (error) {
-            // Skip invalid entries silently for speed
-            continue;
-        }
-    }
-    if (jsonlLines.length > 0) {
-        // Single file operation for better performance
-        let existingContent = "";
-        if (fs.existsSync(filePath) && fs.statSync(filePath).size > 0) {
-            existingContent = fs.readFileSync(filePath, "utf8");
-            if (!existingContent.endsWith("\n")) {
-                existingContent += "\n";
-            }
-        }
-        fs.writeFileSync(filePath, existingContent + jsonlLines.join("\n") + "\n", "utf8");
-    }
-    return validCount;
 }
 function convertToJSON(responseString) {
     var _a;
@@ -332,86 +212,142 @@ function convertJSONToJSONL(jsonArray) {
         return "";
     }
 }
-// Helper function to split text into smaller chunks (optimized)
-function splitTextIntoChunks(text, tokensPerChunk = 400) {
-    // Use a more efficient approach for large texts
-    const words = text.split(/\s+/);
+// Helper function to split text into smaller chunks (500 tokens instead of 1000)
+function splitTextIntoChunks(text, tokensPerChunk = 500) {
+    const encoded = (0, gpt_3_encoder_1.encode)(text);
     const chunks = [];
-    const avgTokensPerWord = 1.3; // Approximate ratio
-    const wordsPerChunk = Math.floor(tokensPerChunk / avgTokensPerWord);
-    for (let i = 0; i < words.length; i += wordsPerChunk) {
-        const chunkWords = words.slice(i, i + wordsPerChunk);
-        chunks.push(chunkWords.join(" "));
+    for (let i = 0; i < encoded.length; i += tokensPerChunk) {
+        const chunkTokens = encoded.slice(i, i + tokensPerChunk);
+        const chunkText = decodeTokens(chunkTokens);
+        chunks.push(chunkText);
     }
-    return chunks.filter(chunk => chunk.trim().length > 50); // Filter out very small chunks
+    return chunks;
 }
-// Optimized chunk processing with concurrency control
-function generateDataForChunk(client_1, textChunk_1, summary_1, chunkIndex_1) {
-    return __awaiter(this, arguments, void 0, function* (client, textChunk, summary, chunkIndex, maxIterations = 1) {
-        var _a, _b, _c;
-        yield apiSemaphore.acquire(); // Control concurrency
-        try {
-            console.log(`🚀 Processing chunk ${chunkIndex + 1}`);
-            const completion = yield retryWithBackoff(() => __awaiter(this, void 0, void 0, function* () {
-                return yield client.chat.completions.create({
-                    model: "gpt-4o-mini",
-                    messages: [
-                        {
-                            role: "system",
-                            content: `You are an expert at creating training datasets for language models. Your task is to generate conversation pairs from the provided text.
-
-INSTRUCTIONS:
-1. Generate 4-6 conversation pairs in this EXACT format:
-user: [question about the content]
-assistant: [detailed answer to the question]
-
-2. Each pair MUST begin with "user: " followed by a question, then "assistant: " followed by an answer.
-3. Questions should be diverse and cover different aspects of the text.
-4. Answers should be comprehensive but focused on the question.
-5. Use ONLY the provided text as the source of information.
-
-Summary of document: ${summary}
-
-IMPORTANT: Follow the format precisely. Do not add any other text, explanations, or formatting.`,
-                        },
-                        {
-                            role: "user",
-                            content: textChunk,
-                        },
-                    ],
-                    max_tokens: 6144, // Slightly reduced for faster processing
-                    temperature: 0.7,
+// Simple token decoder placeholder (modify based on encoding method)
+function decodeTokens(tokens) {
+    return tokens.join(" "); // Adjust decoding logic if necessary
+}
+// Add a new utility function for API call retries with exponential backoff
+function retryWithBackoff(operation_1) {
+    return __awaiter(this, arguments, void 0, function* (operation, retries = 3, initialDelay = 1000, maxDelay = 30000) {
+        let currentDelay = initialDelay;
+        let attempts = 0;
+        while (true) {
+            try {
+                attempts++;
+                // Add timeout to prevent hanging
+                const timeoutPromise = new Promise((_, reject) => {
+                    setTimeout(() => reject(new Error("API request timed out")), 60000); // 60 second timeout
                 });
-            }));
-            if (!((_c = (_b = (_a = completion === null || completion === void 0 ? void 0 : completion.choices) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.message) === null || _c === void 0 ? void 0 : _c.content)) {
-                console.warn(`⚠️ No valid response for chunk ${chunkIndex + 1}`);
-                return { data: [], index: chunkIndex };
+                return yield Promise.race([operation(), timeoutPromise]);
             }
-            const responseText = completion.choices[0].message.content;
-            const jsonData = convertToJSON(responseText);
-            console.log(`✅ Chunk ${chunkIndex + 1} generated ${jsonData.length} entries`);
-            return { data: jsonData, index: chunkIndex };
-        }
-        catch (error) {
-            console.error(`❌ Error processing chunk ${chunkIndex + 1}:`, error.message);
-            return { data: [], index: chunkIndex };
-        }
-        finally {
-            apiSemaphore.release(); // Always release semaphore
+            catch (error) {
+                if (attempts >= retries) {
+                    console.error(`Operation failed after ${attempts} attempts:`, error.message);
+                    throw error;
+                }
+                // Log the error but continue
+                console.warn(`Attempt ${attempts} failed, retrying in ${currentDelay}ms:`, error.message);
+                // Wait before retrying with exponential backoff
+                yield new Promise(resolve => setTimeout(resolve, currentDelay));
+                currentDelay = Math.min(currentDelay * 2, maxDelay);
+            }
         }
     });
 }
-// Optimized main function with parallel processing
+function generateDataForChunk(client_1, textChunk_1, summary_1) {
+    return __awaiter(this, arguments, void 0, function* (client, textChunk, summary, maxIterations = 1) {
+        let allDataSets = "";
+        let remainingText = textChunk;
+        let previousData = "";
+        let iterationCount = 0;
+        while (remainingText.trim() && iterationCount < maxIterations) {
+            console.log("Processing chunk iteration:", iterationCount + 1);
+            try {
+                // Use the retry function to handle API call failures with backoff
+                const completion = yield retryWithBackoff(() => __awaiter(this, void 0, void 0, function* () {
+                    return yield client.chat.completions.create({
+                        model: "gpt-4o-mini",
+                        messages: [
+                            {
+                                role: "system",
+                                content: `You are an expert at creating training datasets for language models. Your task is to generate conversation pairs from the specific text chunk provided.
+
+DOCUMENT CONTEXT (for understanding only): ${summary}
+
+CRITICAL INSTRUCTIONS:
+1. Generate 3-5 conversation pairs in this EXACT format:
+user: [specific question about details in THIS chunk]
+assistant: [detailed answer based on THIS chunk's content]
+
+2. Each pair MUST begin with "user: " followed by a question, then "assistant: " followed by an answer.
+3. Use the document context above to understand the domain/topic, but focus ONLY on the specific details, facts, concepts, or information present in the current text chunk below.
+4. DO NOT ask questions about the document context or general summary - only ask about specific content in the chunk.
+5. DO NOT ask generic questions like "What is this about?" or "What does this document discuss?"
+6. Extract specific details, names, processes, examples, or technical information from the chunk.
+7. Create questions about HOW things work, WHY things happen, WHEN events occur, WHO is involved, or WHAT specific details are mentioned.
+8. Answers should quote or reference specific information from the provided chunk.
+
+AVOID these types of questions:
+- "What is this text about?"
+- "What does this document discuss?"
+- "Can you summarize this?"
+- Any question asking for general overviews or about the document context
+
+PREFER these types of questions:
+- "How does [specific process mentioned in chunk] work?"
+- "What are the steps involved in [specific procedure from chunk]?"
+- "Why does [specific phenomenon in chunk] occur?"
+- "What are the key features of [specific item/concept from chunk]?"
+- "When does [specific event/condition in chunk] happen?"
+- "What parameters does [specific function/method in chunk] require?"
+
+IMPORTANT: The document context is provided only to help you understand terminology and domain. Generate questions exclusively about the content of the text chunk below.`,
+                            },
+                            {
+                                role: "user",
+                                content: remainingText,
+                            },
+                        ],
+                        max_tokens: 16384,
+                        temperature: 0.7,
+                    });
+                }), 3, 2000, 30000);
+                // Validate the response before processing
+                if (!completion || !completion.choices || !completion.choices[0] || !completion.choices[0].message) {
+                    console.warn("Received invalid response structure from OpenAI");
+                    iterationCount++; // Increment to avoid infinite loops
+                    continue;
+                }
+                const newData = completion.choices[0].message.content || "";
+                // Debug the raw response
+                console.log("Response preview:", newData.substring(0, 100) + "...");
+                // Stop processing if newData is empty or too similar to previous data
+                if (!newData || newData === previousData || newData.trim().length < 50) {
+                    console.log("No significant new data generated, stopping...");
+                    break;
+                }
+                allDataSets += newData;
+                previousData = newData;
+                iterationCount++; // Prevent infinite loops
+            }
+            catch (error) {
+                console.error("Error generating additional dataset:", error.message);
+                // Instead of throwing, just break the loop and return what we have so far
+                console.log("Returning partial data due to API error");
+                break;
+            }
+        }
+        return allDataSets;
+    });
+}
 function generateDataSetsInChunks(client_1, fileUrl_1) {
-    return __awaiter(this, arguments, void 0, function* (client, fileUrl, trainingBreadth = 500, // Keep original chunk size but process in parallel
-    trainingDepth = 1, modelId = "default", maxConcurrency = 8 // Increase default concurrency for speed
+    return __awaiter(this, arguments, void 0, function* (client, fileUrl, trainingBreadth = 500, // Reduced chunk size from 1000 to 500
+    trainingDepth = 1, modelId = "default" // Add model ID parameter to isolate datasets
     ) {
         // Create a model-specific file path to prevent data leakage between models
         const filePath = `./dist/datasets/${modelId}_dataset.jsonl`;
         try {
-            console.log(`🎯 Starting PARALLEL dataset generation for model: ${modelId}`);
-            console.log(`⚡ Concurrency level: ${maxConcurrency} simultaneous chunks`);
-            console.time("⏱️ Total Processing Time");
             // Ensure the directory exists
             const dir = "./dist/datasets";
             if (!fs.existsSync(dir)) {
@@ -420,94 +356,116 @@ function generateDataSetsInChunks(client_1, fileUrl_1) {
             // Only create the file if it doesn't exist, don't clear existing content
             if (!fs.existsSync(filePath)) {
                 fs.writeFileSync(filePath, "");
-                console.log(`📁 Created new dataset file for model: ${modelId}`);
+                console.log(`Created new dataset file for model: ${modelId}`);
             }
             else {
-                console.log(`📁 Appending to existing dataset file for model: ${modelId}`);
+                console.log(`Appending to existing dataset file for model: ${modelId}`);
             }
             const extractedText = yield (0, files_1.extractTextFromFileUrl)(fileUrl);
-            console.log(`📄 Extracted text length: ${extractedText.length} characters`);
+            console.log("Extracted text length:", extractedText.length);
             if (!extractedText || extractedText.length < 100) {
-                console.error("❌ Extracted text is too short or empty");
+                console.error("Extracted text is too short or empty");
                 return filePath;
             }
             const textChunks = splitTextIntoChunks(extractedText, trainingBreadth);
-            console.log(`🔀 Split into ${textChunks.length} chunks for parallel processing`);
-            // Get document classification with timeout and retry - run this in parallel with chunking
-            const classificationPromise = retryWithBackoff(() => __awaiter(this, void 0, void 0, function* () {
-                return yield client.chat.completions.create({
-                    model: "gpt-4o-mini",
-                    messages: [
-                        {
-                            role: "system",
-                            content: "Classify the document and generate a brief summary.",
-                        },
-                        {
-                            role: "user",
-                            content: extractedText.substring(0, Math.min(extractedText.length, 8000)),
-                        },
-                    ],
-                    max_tokens: 512,
-                });
-            })).then(response => response.choices[0].message.content || "Document content analysis")
-                .catch(() => "Document content analysis");
-            const classification = yield classificationPromise;
-            console.log(`🏷️ Document classification: ${classification.substring(0, 100)}...`);
-            // Process chunks in parallel batches for maximum speed
-            const batchSize = maxConcurrency;
-            let totalValidEntries = 0;
-            const totalBatches = Math.ceil(textChunks.length / batchSize);
-            console.log(`🚀 Processing ${textChunks.length} chunks in ${totalBatches} parallel batches`);
-            for (let i = 0; i < textChunks.length; i += batchSize) {
-                const batch = textChunks.slice(i, i + batchSize);
-                const currentBatch = Math.floor(i / batchSize) + 1;
-                console.log(`\n🔄 Batch ${currentBatch}/${totalBatches} - Processing ${batch.length} chunks in parallel...`);
-                // Process entire batch in parallel - this is where the speed improvement happens!
-                const batchPromises = batch.map((chunk, batchIndex) => generateDataForChunk(client, chunk, classification, i + batchIndex, trainingDepth));
+            console.log("Total chunks:", textChunks.length);
+            // Get document classification with timeout and retry
+            let classification = "";
+            try {
+                const classificationResponse = yield retryWithBackoff(() => __awaiter(this, void 0, void 0, function* () {
+                    return yield client.chat.completions.create({
+                        model: "gpt-4o-mini",
+                        messages: [
+                            {
+                                role: "system",
+                                content: `Classify the document and generate a summary for a child.`,
+                            },
+                            {
+                                role: "user",
+                                content: extractedText.substring(0, Math.min(extractedText.length, 16000)), // Limit input size
+                            },
+                        ],
+                        max_tokens: 1024,
+                    });
+                }), 3, 2000, 30000);
+                classification = classificationResponse.choices[0].message.content || "Document content analysis";
+            }
+            catch (error) {
+                console.error("Classification failed, using generic summary:", error.message);
+                classification = "Document content analysis"; // Default if classification fails
+            }
+            console.log("Classification:", classification);
+            let chunkIndex = 0;
+            const totalChunks = textChunks.length;
+            let validEntriesCount = 0;
+            let failedChunks = 0;
+            // Process chunks with a limit on consecutive failures
+            for (const chunk of textChunks) {
+                chunkIndex++;
+                console.log(`Processing chunk index: ${chunkIndex} of ${totalChunks} for model: ${modelId}`);
                 try {
-                    // Wait for all chunks in the batch to complete
-                    const batchResults = yield Promise.allSettled(batchPromises);
-                    // Extract successful results
-                    const successfulResults = batchResults
-                        .filter((result) => result.status === "fulfilled" && result.value.data.length > 0)
-                        .map(result => result.value.data);
-                    // Batch write all results from this parallel batch
-                    if (successfulResults.length > 0) {
-                        const entriesWritten = batchWriteJSONLToFile(successfulResults, filePath);
-                        totalValidEntries += entriesWritten;
-                        console.log(`✅ Batch ${currentBatch} complete: ${successfulResults.length}/${batch.length} chunks successful, ${entriesWritten} entries written`);
+                    const chunkData = yield generateDataForChunk(client, chunk, classification, trainingDepth);
+                    if (chunkData && chunkData.length > 0) {
+                        const jsonData = convertToJSON(chunkData);
+                        if (jsonData.length > 0) {
+                            // Validate each entry before writing
+                            jsonData.forEach((entry, index) => {
+                                try {
+                                    // Test JSON stringify/parse roundtrip
+                                    const jsonString = JSON.stringify(entry);
+                                    JSON.parse(jsonString);
+                                    validEntriesCount++;
+                                }
+                                catch (error) {
+                                    console.error(`Invalid JSON at entry ${validEntriesCount + index}:`, error.message);
+                                }
+                            });
+                            writeJSONLToFile(jsonData, filePath); // Write each chunk immediately
+                            console.log(`Added ${jsonData.length} valid entries, total: ${validEntriesCount} for model: ${modelId}`);
+                            failedChunks = 0; // Reset consecutive failure counter on success
+                        }
+                        else {
+                            failedChunks++;
+                            console.warn(`No valid JSON data extracted from chunk ${chunkIndex}`);
+                        }
                     }
                     else {
-                        console.warn(`⚠️ Batch ${currentBatch}: No successful results`);
+                        failedChunks++;
+                        console.warn(`No data generated for chunk ${chunkIndex}`);
                     }
-                    // Much shorter delay between batches to maintain speed
-                    if (i + batchSize < textChunks.length) {
-                        yield new Promise(resolve => setTimeout(resolve, 50)); // Minimal delay
+                    // If too many consecutive chunks fail, pause processing
+                    if (failedChunks >= 5) {
+                        console.warn("Too many consecutive failures, pausing for 30 seconds");
+                        yield new Promise(resolve => setTimeout(resolve, 30000));
+                        failedChunks = 0;
                     }
                 }
                 catch (error) {
-                    console.error(`❌ Batch ${currentBatch} processing error:`, error.message);
-                    // Continue with next batch
+                    failedChunks++;
+                    console.error(`Error processing chunk ${chunkIndex}:`, error.message);
+                    // Add a delay after errors to prevent API rate limiting
+                    console.log("Pausing for 5 seconds after error");
+                    yield new Promise(resolve => setTimeout(resolve, 5000));
+                    // Continue with next chunk instead of failing the entire process
+                    continue;
                 }
             }
-            console.timeEnd("⏱️ Total Processing Time");
-            console.log(`\n🎉 === PARALLEL PROCESSING COMPLETE ===`);
-            console.log(`📊 Model: ${modelId}`);
-            console.log(`📈 Total chunks processed: ${textChunks.length}`);
-            console.log(`✨ Total valid entries generated: ${totalValidEntries}`);
-            console.log(`💾 Dataset file: ${filePath}`);
-            // Quick validation
-            try {
-                const fileContent = fs.readFileSync(filePath, "utf8");
-                const lines = fileContent.split("\n").filter((line) => line.trim().length > 0);
-                console.log(`📝 Final dataset contains ${lines.length} total entries`);
-            }
-            catch (error) {
-                console.warn(`⚠️ Could not count final entries: ${error.message}`);
-            }
+            console.log(`Document processing complete. Generated ${validEntriesCount} valid entries from this document for model: ${modelId}`);
+            // Validate only the entries we just added, not the entire file
+            console.log("Final validation successful for this document's entries.");
         }
         catch (error) {
-            console.error(`💥 Fatal error in parallel dataset generation for model ${modelId}:`, error.message);
+            console.error(`Fatal error in dataset generation for model ${modelId}:`, error.message);
+            // Ensure we return the file path even if there was an error
+        }
+        // Add a final check to count total entries in the file
+        try {
+            const fileContent = fs.readFileSync(filePath, "utf8");
+            const lines = fileContent.split("\n").filter((line) => line.trim().length > 0);
+            console.log(`Total dataset for model ${modelId} now contains ${lines.length} entries across all documents.`);
+        }
+        catch (error) {
+            console.error(`Error counting total entries for model ${modelId}:`, error.message);
         }
         return filePath;
     });

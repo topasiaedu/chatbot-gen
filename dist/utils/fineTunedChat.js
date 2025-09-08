@@ -10,7 +10,8 @@ var __awaiter = (this && this.__awaiter) || function (thisArg, _arguments, P, ge
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.getFineTunedChat = getFineTunedChat;
-function getFineTunedChat(client, modelId, prompt, description, messages) {
+const chat_message_1 = require("../db/chat_message");
+function getFineTunedChat(client, modelId, prompt, description, messages, userEmail, botId) {
     return __awaiter(this, void 0, void 0, function* () {
         if (!client) {
             throw new Error("OpenAI client is not defined");
@@ -47,6 +48,30 @@ function getFineTunedChat(client, modelId, prompt, description, messages) {
                 },
             ],
         });
-        return completion.choices[0].message.content;
+        const botResponse = completion.choices[0].message.content;
+        // Save chat messages to database if email and botId are provided
+        if (userEmail && botId && botResponse) {
+            try {
+                // Save user message
+                yield (0, chat_message_1.saveChatMessage)({
+                    bot_id: botId,
+                    user_email: userEmail,
+                    sender: "user",
+                    message_text: prompt,
+                });
+                // Save bot response
+                yield (0, chat_message_1.saveChatMessage)({
+                    bot_id: botId,
+                    user_email: userEmail,
+                    sender: "bot",
+                    message_text: botResponse,
+                });
+            }
+            catch (error) {
+                // Log the error but don't fail the chat response
+                console.error("Failed to save chat messages:", error);
+            }
+        }
+        return botResponse;
     });
 }

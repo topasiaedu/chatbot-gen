@@ -50,6 +50,10 @@ const fs = require("fs");
 const path_1 = __importDefault(require("path"));
 const swagger_ui_express_1 = __importDefault(require("swagger-ui-express"));
 const swagger_1 = __importDefault(require("./swagger"));
+const transcription_1 = require("./realtime/transcription");
+const files_1 = require("./utils/files");
+const transcription_2 = require("./db/transcription");
+const supabaseClient_1 = __importDefault(require("./db/supabaseClient"));
 dotenv.config();
 const app = (0, express_1.default)();
 const port = process.env.PORT || 8000;
@@ -87,6 +91,10 @@ if (!OPENAI_API_KEY) {
 const client = new openai_1.default({
     apiKey: process.env["OPENAI_API_KEY"], // This is the default and can be omitted
 });
+// Initialize realtime transcription listener
+const TRANSCRIPTION_BUCKET = process.env.TRANSCRIPTION_BUCKET_NAME || "transcription";
+const stopTranscriptionRealtime = (0, transcription_1.initTranscriptionRealtime)(client, TRANSCRIPTION_BUCKET);
+const stopTranscriptionPolling = (0, transcription_1.startTranscriptionPolling)(client, TRANSCRIPTION_BUCKET, 30000);
 /**
  * @swagger
  * /:
@@ -100,6 +108,145 @@ const client = new openai_1.default({
 app.get("/", (req, res) => {
     res.send("Hello World!");
 });
+/**
+ * @swagger
+ * /transcriptions/{id}:
+ *   get:
+ *     summary: Get transcription task status
+ *     description: Returns the current status of the transcription task and recent error reports
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         schema:
+ *           type: string
+ *         required: true
+ *         description: The transcription task ID
+ *     responses:
+ *       200:
+ *         description: Success
+ *       404:
+ *         description: Task not found
+ */
+app.get("/transcriptions/:id", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    const taskId = req.params.id;
+    try {
+        // Fetch the task row from DB
+        const task = yield (0, transcription_2.fetchTranscriptionTask)(taskId);
+        // Fetch associated transcription files
+        const transcriptionFiles = yield (0, transcription_2.fetchTranscriptionFilesByTaskId)(taskId);
+        // Derive status if column is missing or null
+        const derivedStatus = (() => {
+            var _a, _b;
+            const s = (_a = task.status) !== null && _a !== void 0 ? _a : null;
+            if (typeof s === "string" && s.length > 0)
+                return s;
+            const resultUrl = (_b = task.result_url) !== null && _b !== void 0 ? _b : null;
+            if (resultUrl === null)
+                return "PENDING";
+            if (typeof resultUrl === "string" && resultUrl.startsWith("processing:"))
+                return "PROCESSING";
+            return "COMPLETED";
+        })();
+        // List recent error reports for this task from storage
+        const listResp = yield supabaseClient_1.default.storage
+            .from(TRANSCRIPTION_BUCKET)
+            .list("errors", {
+            limit: 10,
+            sortBy: { column: "created_at", order: "desc" },
+            search: taskId,
+        });
+        const errorReports = Array.isArray(listResp.data)
+            ? listResp.data
+                .filter((f) => typeof f.name === "string" && f.name.includes(taskId))
+                .map((f) => supabaseClient_1.default.storage.from(TRANSCRIPTION_BUCKET).getPublicUrl(`errors/${f.name}`).data.publicUrl)
+            : [];
+        res.json({
+            id: task.id,
+            status: derivedStatus,
+            language: task.language,
+            mediaUrls: transcriptionFiles.map(f => f.media_url).filter(url => url !== null), // File chunks for large files
+            chunkCount: transcriptionFiles.length,
+            resultUrl: task.result_url,
+            openaiTaskId: task.openai_task_id,
+            errorReports,
+        });
+    }
+    catch (e) {
+        res.status(404).json({ error: e.message });
+    }
+}));
+/**
+ * @swagger
+ * /chat-with-transcriptions:
+ *   post:
+ *     summary: Chat with context from selected transcription files
+ *     description: Includes the given transcription results as system/context messages
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - prompt
+ *               - transcriptionUrls
+ *             properties:
+ *               prompt:
+ *                 type: string
+ *               transcriptionUrls:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *               messages:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     role:
+ *                       type: string
+ *                       enum: [user, assistant, system]
+ *                     content:
+ *                       type: string
+ *     responses:
+ *       200:
+ *         description: Success
+ */
+app.post("/chat-with-transcriptions", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
+    var _a, _b, _c;
+    const { prompt, transcriptionUrls, messages } = req.body;
+    if (!prompt) {
+        return res.status(400).json({ error: "Missing prompt" });
+    }
+    if (!Array.isArray(transcriptionUrls) || transcriptionUrls.length === 0) {
+        return res.status(400).json({ error: "Missing transcriptionUrls" });
+    }
+    // Fetch transcript texts from public URLs
+    const transcriptTexts = [];
+    for (const url of transcriptionUrls) {
+        try {
+            const text = yield (0, files_1.extractTextFromFileUrl)(url);
+            transcriptTexts.push(text);
+        }
+        catch (e) {
+            return res.status(400).json({ error: `Failed to fetch transcription: ${e.message}` });
+        }
+    }
+    const systemContext = `You are a helpful assistant. You are provided with one or more transcript documents. Use them to answer the user's question. If the answer is not in the transcripts, say you don't know.`;
+    const contextMessages = transcriptTexts.map((t, i) => ({ role: "system", content: `Transcript ${i + 1}:\n${t}` }));
+    const sanitizedHistory = Array.isArray(messages)
+        ? messages.filter((m) => m && typeof m.content === "string" && (m.role === "user" || m.role === "assistant" || m.role === "system"))
+        : [];
+    const completion = yield client.chat.completions.create({
+        model: "gpt-4o-mini-2024-07-18",
+        messages: [
+            { role: "system", content: systemContext },
+            ...contextMessages,
+            ...sanitizedHistory,
+            { role: "user", content: prompt },
+        ],
+    });
+    res.json({ completion: (_c = (_b = (_a = completion.choices[0]) === null || _a === void 0 ? void 0 : _a.message) === null || _b === void 0 ? void 0 : _b.content) !== null && _c !== void 0 ? _c : "" });
+}));
 /**
  * @swagger
  * /health:
@@ -386,7 +533,7 @@ app.post("/train-bot", (req, res) => __awaiter(void 0, void 0, void 0, function*
     let fileProcessed = 0;
     for (const botFile of botFiles) {
         // Extract text from the bot file
-        yield (0, generateDatasets_1.generateDataSetsInChunks)(client, botFile.file_url, bot.training_breadth, bot.training_depth);
+        yield (0, generateDatasets_1.generateDataSetsInChunks)(client, botFile.file_url, bot.training_breadth, bot.training_depth, bot.id);
         fileProcessed++;
         // Update the bot progress (round to integer)
         const progress = Math.round((fileProcessed / botFiles.length) * 100);
@@ -410,7 +557,7 @@ app.post("/train-bot", (req, res) => __awaiter(void 0, void 0, void 0, function*
  * /chat-with-bot:
  *   post:
  *     summary: Chat with a trained bot
- *     description: Send a prompt to a specific trained bot
+ *     description: Send a prompt to a specific trained bot. Chat messages will be saved to database if email is provided.
  *     requestBody:
  *       required: true
  *       content:
@@ -427,11 +574,23 @@ app.post("/train-bot", (req, res) => __awaiter(void 0, void 0, void 0, function*
  *               prompt:
  *                 type: string
  *                 description: The prompt to send to the bot
+ *               email:
+ *                 type: string
+ *                 format: email
+ *                 description: User's email address (optional, used for saving chat history)
  *               messages:
  *                 type: array
  *                 description: Optional chat history
  *                 items:
  *                   type: object
+ *                   properties:
+ *                     text:
+ *                       type: string
+ *                       description: The message text
+ *                     sender:
+ *                       type: string
+ *                       enum: [user, bot]
+ *                       description: Who sent the message
  *     responses:
  *       200:
  *         description: Success, returns the completion
@@ -456,7 +615,7 @@ app.post("/train-bot", (req, res) => __awaiter(void 0, void 0, void 0, function*
  *               $ref: '#/components/schemas/Error'
  */
 app.post("/chat-with-bot", (req, res) => __awaiter(void 0, void 0, void 0, function* () {
-    const { botId, prompt, messages } = req.body;
+    const { botId, prompt, messages, email } = req.body;
     if (!botId) {
         return res.status(400).json({ error: "Missing botId" });
     }
@@ -477,7 +636,9 @@ app.post("/chat-with-bot", (req, res) => __awaiter(void 0, void 0, void 0, funct
     if (!botModel) {
         return res.status(404).json({ error: "Bot model not found" });
     }
-    const completion = yield (0, fineTunedChat_1.getFineTunedChat)(client, botModel.open_ai_id, prompt, bot.description, messages);
+    const completion = yield (0, fineTunedChat_1.getFineTunedChat)(client, botModel.open_ai_id, prompt, bot.description, messages, email, // 👈 Pass email for chat history saving
+    botId // 👈 Pass botId for chat history saving
+    );
     res.json({ completion });
 }));
 // Error handling middleware

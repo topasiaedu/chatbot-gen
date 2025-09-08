@@ -468,7 +468,7 @@ export async function transcribeMediaWithOpenAI(
   return { resultUrl };
 }
 
-async function splitMediaIntoChunks(inputPath: string, outDir: string, segmentSeconds: number): Promise<string[]> {
+export async function splitMediaIntoChunks(inputPath: string, outDir: string, segmentSeconds: number): Promise<string[]> {
   // Validate input file exists and is non-empty
   try {
     const stats = fs.statSync(inputPath);

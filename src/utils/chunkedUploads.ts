@@ -9,6 +9,7 @@ import ffprobeStatic from "ffprobe-static";
 import logger from "./logger";
 import supabase from "../db/supabaseClient";
 import { updateTranscriptionTask, type TranscriptionFile } from "../db/transcription";
+import { splitMediaIntoChunks } from "./transcription";
 
 export interface CompletionInfo {
   expected: number | null;
@@ -192,6 +193,7 @@ export async function assembleAndTranscribeM4a(
   const workDir = path.join(os.tmpdir(), `chunks-${opts.taskId}-${Date.now()}`);
   const dlDir = path.join(workDir, "dl");
   const outPath = path.join(workDir, "merged.m4a");
+  const segDir = path.join(workDir, "segments");
   await fsp.mkdir(workDir, { recursive: true });
 
   try {
@@ -227,23 +229,52 @@ export async function assembleAndTranscribeM4a(
       durationSeconds: info.durationSeconds ?? 0,
     });
 
-    // Transcribe merged file directly (no segmentation to preserve simplicity)
-    await updateTranscriptionTask(opts.taskId, { status: "PROCESSING:TRANSCRIBING", progress: null });
-    const readStream = fs.createReadStream(outPath);
-    const req: Record<string, unknown> = {
-      model: "whisper-1",
-      file: readStream,
-      response_format: "text",
-      temperature: 0,
-    };
-    if (typeof opts.language === "string" && opts.language.trim().length > 0) {
-      req.language = opts.language;
+    // Segment merged file into ~60s chunks and transcribe concurrently
+    await fsp.mkdir(segDir, { recursive: true });
+    const segmentSeconds: number = Number.parseInt(process.env.CHUNK_DURATION_SECONDS || "60", 10);
+    const segmentPaths = await splitMediaIntoChunks(outPath, segDir, segmentSeconds);
+    if (segmentPaths.length === 0) {
+      throw new Error("No segments produced from merged media");
     }
-    const transcription = await client.audio.transcriptions.create(req as never);
-    const text = typeof transcription === "string"
-      ? transcription
-      : ((transcription as { text?: string }).text ?? "");
 
+    await updateTranscriptionTask(opts.taskId, { status: "PROCESSING:TRANSCRIBING", progress: `0/${segmentPaths.length} segments` });
+
+    const concurrency: number = Math.max(1, Number.parseInt(process.env.CHUNK_CONCURRENCY || "3", 10));
+    const results: string[] = new Array(segmentPaths.length).fill("");
+    let completed = 0;
+
+    const workers: Promise<void>[] = [];
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex;
+        nextIndex += 1;
+        if (i >= segmentPaths.length) return;
+        const seg = segmentPaths[i];
+        const fileStream = fs.createReadStream(seg);
+        const req: Record<string, unknown> = {
+          model: "whisper-1",
+          file: fileStream,
+          response_format: "text",
+          temperature: 0,
+        };
+        if (typeof opts.language === "string" && opts.language.trim().length > 0) {
+          req.language = opts.language;
+        }
+        const transcription = await client.audio.transcriptions.create(req as never);
+        const text = typeof transcription === "string" ? transcription : ((transcription as { text?: string }).text ?? "");
+        results[i] = text;
+        completed += 1;
+        try {
+          await updateTranscriptionTask(opts.taskId, { status: completed === segmentPaths.length ? "PROCESSING:UPLOADING" : "PROCESSING:TRANSCRIBING", progress: `${completed}/${segmentPaths.length} segments` });
+        } catch {}
+      }
+    };
+    for (let w = 0; w < Math.min(concurrency, segmentPaths.length); w += 1) {
+      workers.push(worker());
+    }
+    await Promise.all(workers);
+    const text = results.join("\n\n");
     if (text.trim().length === 0) {
       throw new Error("Transcription result is empty");
     }

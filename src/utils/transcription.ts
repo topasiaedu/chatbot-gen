@@ -6,7 +6,7 @@ import OpenAI from "openai";
 import supabase from "../db/supabaseClient";
 import logger from "./logger";
 import { uploadErrorReport, type TranscriptionPhase } from "./transcriptionDiagnostics";
-import { updateTranscriptionTask } from "../db/transcription";
+import { updateTranscriptionTask, fetchTranscriptionFilesByTaskId, deleteTranscriptionFilesByTaskId, fetchTranscriptionTask } from "../db/transcription";
 import { spawn } from "child_process";
 import ffmpegPath from "ffmpeg-static";
 
@@ -56,6 +56,52 @@ async function uploadResultText(bucket: string, taskId: string, text: string): P
   return publicUrl.publicUrl;
 }
 
+/**
+ * Cleans up file chunks from Supabase storage after successful transcription.
+ * Extracts the file path from the public URL and deletes it from storage.
+ */
+async function cleanupFileChunksFromStorage(bucket: string, taskId: string, mediaUrls: string[]): Promise<void> {
+  logger.info("Starting cleanup of file chunks from storage", { taskId, chunkCount: mediaUrls.length });
+  
+  const filePaths: string[] = [];
+  
+  // Extract file paths from public URLs
+  for (const url of mediaUrls) {
+    try {
+      // Parse the public URL to extract the file path
+      // URL format: https://project.supabase.co/storage/v1/object/public/bucket/path/to/file
+      const urlParts = url.split("/");
+      const bucketIndex = urlParts.findIndex(part => part === bucket);
+      if (bucketIndex !== -1 && bucketIndex < urlParts.length - 1) {
+        // Get everything after the bucket name as the file path
+        const filePath = urlParts.slice(bucketIndex + 1).join("/");
+        filePaths.push(filePath);
+      }
+    } catch (error) {
+      logger.warn("Failed to parse file URL for cleanup", { url, error: (error as Error).message });
+    }
+  }
+  
+  if (filePaths.length === 0) {
+    logger.warn("No valid file paths found for cleanup", { taskId });
+    return;
+  }
+  
+  // Delete files from storage
+  const { data, error } = await supabase.storage.from(bucket).remove(filePaths);
+  
+  if (error) {
+    logger.error("Failed to cleanup file chunks from storage", { taskId, error: error.message });
+    // Don't throw error - cleanup failure shouldn't fail the transcription
+  } else {
+    logger.info("Successfully cleaned up file chunks from storage", { 
+      taskId, 
+      deletedCount: data?.length || 0,
+      filePathsCount: filePaths.length
+    });
+  }
+}
+
 export type TranscribeOptions = {
   bucketName: string;
   taskId: string;
@@ -80,16 +126,17 @@ async function processFileChunks(
   client: OpenAI,
   mediaUrls: string[],
   taskId: string,
-  language?: string | null,
+  language: string | null | undefined,
+  startAtChunkIndex: number,
   onProgress?: (p: TranscriptionProgress) => Promise<void> | void
 ): Promise<string> {
   const allResults: string[] = [];
   let totalProcessed = 0;
   
-  logger.info("Processing file chunks individually", { chunkCount: mediaUrls.length, taskId });
+  logger.info("Processing file chunks", { chunkCount: mediaUrls.length, startAtChunkIndex, taskId });
   
   // Process each chunk individually
-  for (let chunkIndex = 0; chunkIndex < mediaUrls.length; chunkIndex++) {
+  for (let chunkIndex = startAtChunkIndex; chunkIndex < mediaUrls.length; chunkIndex++) {
     const mediaUrl = mediaUrls[chunkIndex];
     logger.info("Processing chunk", { chunkIndex: chunkIndex + 1, totalChunks: mediaUrls.length, taskId });
     
@@ -154,6 +201,11 @@ async function processFileChunks(
       // Combine results from this chunk
       const chunkText = chunkResults.join("\n\n");
       allResults.push(chunkText);
+
+      // Persist chunk-level progress in the DB as "X/Y chunks"
+      try {
+        await updateTranscriptionTask(taskId, { progress: `${chunkIndex + 1}/${mediaUrls.length} chunks`, status: "PROCESSING:TRANSCRIBING" });
+      } catch {}
       
       // Clean up temp files for this chunk
       fs.unlinkSync(tempPath);
@@ -183,7 +235,7 @@ async function processFileChunks(
 
 /**
  * Transcribes media file chunks using Whisper with configurable language detection,
- * and uploads the transcription as text to the Supabase bucket.
+ * uploads the transcription as text to the Supabase bucket, and cleans up all temporary files.
  * 
  * Process:
  * - Takes multiple media URLs (file chunks from transcription_files table)
@@ -191,11 +243,20 @@ async function processFileChunks(
  * - Splits each chunk into 1-minute segments (same as normal processing)
  * - Sends segments to Whisper with optional language parameter
  * - Combines all transcription results into single output
+ * - Cleans up file chunks from Supabase storage to save space
+ * - Removes transcription_files database records
+ * - Cleans up all temporary files from server
  * 
  * Language support:
  * - If language is provided, it's passed to Whisper for better accuracy
  * - If language is null/empty, Whisper will auto-detect the language
  * - Language should be in ISO 639-1 format (e.g., "en", "zh", "es", "fr")
+ * 
+ * Cleanup behavior:
+ * - After successful transcription, all file chunks are deleted from Supabase storage
+ * - Database records in transcription_files table are removed
+ * - All temporary files on server are cleaned up during processing
+ * - Cleanup failures are logged but don't affect transcription success
  */
 export async function transcribeMediaWithOpenAI(
   client: OpenAI,
@@ -209,21 +270,35 @@ export async function transcribeMediaWithOpenAI(
 
   if (onProgress) await onProgress({ phase: "download_start" });
   
-  logger.info("Processing file chunks individually", { 
+  logger.info("Preparing to process file chunks", { 
     taskId: opts.taskId, 
     chunkCount: opts.mediaUrls.length,
     language: opts.language || "auto-detect"
   });
   
-  // Initialize progress
+  // Initialize or resume progress
+  let startAtChunkIndex = 0;
   try {
-    await updateTranscriptionTask(opts.taskId, { status: "PROCESSING", progress: `0/${opts.mediaUrls.length} chunks` });
+    const task = await fetchTranscriptionTask(opts.taskId);
+    const p = (task as { progress?: string | null }).progress ?? null;
+    const match = typeof p === "string" ? p.match(/^(\d+)\/(\d+)\s+chunks$/) : null;
+    if (match) {
+      const completed = Number.parseInt(match[1], 10);
+      const total = Number.parseInt(match[2], 10);
+      if (Number.isFinite(completed) && Number.isFinite(total) && total === opts.mediaUrls.length) {
+        startAtChunkIndex = Math.min(Math.max(completed, 0), opts.mediaUrls.length);
+      }
+    }
+    // If no prior progress, set initial
+    if (!match) {
+      await updateTranscriptionTask(opts.taskId, { status: "PROCESSING", progress: `0/${opts.mediaUrls.length} chunks` });
+    }
   } catch {}
   
   if (onProgress) await onProgress({ phase: "download_done" });
   
   // Process all chunks and get combined result
-  const mergedText = await processFileChunks(client, opts.mediaUrls, opts.taskId, opts.language, onProgress);
+  const mergedText = await processFileChunks(client, opts.mediaUrls, opts.taskId, opts.language, startAtChunkIndex, onProgress);
   
   if (mergedText.trim().length === 0) {
     throw new Error("Merged transcription is empty");
@@ -232,28 +307,98 @@ export async function transcribeMediaWithOpenAI(
   if (onProgress) await onProgress({ phase: "upload_start" });
   const resultUrl = await uploadResultText(opts.bucketName, opts.taskId, mergedText);
   logger.info("Result uploaded", { phase: "upload", url: resultUrl, taskId: opts.taskId });
+  
   try {
     await updateTranscriptionTask(opts.taskId, { status: "COMPLETED" });
   } catch {}
+  
+  // Clean up file chunks from storage and database after successful transcription
+  try {
+    await cleanupFileChunksFromStorage(opts.bucketName, opts.taskId, opts.mediaUrls);
+    await deleteTranscriptionFilesByTaskId(opts.taskId);
+    logger.info("Cleanup completed successfully", { taskId: opts.taskId });
+  } catch (cleanupError) {
+    // Log cleanup errors but don't fail the transcription
+    logger.error("Cleanup failed", { taskId: opts.taskId }, cleanupError as Error);
+  }
+  
   if (onProgress) await onProgress({ phase: "upload_done", url: resultUrl });
   return { resultUrl };
 }
 
 async function splitMediaIntoChunks(inputPath: string, outDir: string, segmentSeconds: number): Promise<string[]> {
+  // Validate input file exists and is non-empty
+  try {
+    const stats = fs.statSync(inputPath);
+    if (!stats.isFile() || stats.size === 0) {
+      throw new Error("Input media file is empty or not a file");
+    }
+  } catch (e) {
+    throw new Error(`Failed to access input media: ${(e as Error).message}`);
+  }
+
   const pattern = path.join(outDir, "chunk-%05d.mp3");
-  const args: string[] = [
+
+  // First attempt: direct segmentation with re-encode, explicit audio mapping
+  const argsPrimary: string[] = [
     "-hide_banner",
     "-loglevel", "error",
+    "-fflags", "+genpts",
     "-i", inputPath,
     "-vn", // drop video; extract audio only
     "-ac", "1", // mono
     "-ar", "16000", // 16kHz for Whisper efficiency
+    "-map", "0:a:0?", // map first audio stream if present (do not fail if absent)
     "-f", "segment",
     "-segment_time", String(segmentSeconds),
+    "-reset_timestamps", "1",
     "-c:a", "libmp3lame",
+    "-q:a", "2",
     pattern,
   ];
-  await runFfmpeg(args);
+
+  try {
+    await runFfmpeg(argsPrimary);
+  } catch (err) {
+    const stderr: string = (err as Error).message || "";
+    // Fallback: re-encode full input into a stable MP3 first, then segment with stream copy
+    const intermediatePath = path.join(outDir, "intermediate.mp3");
+    try {
+      const reencodeArgs: string[] = [
+        "-hide_banner",
+        "-loglevel", "error",
+        "-fflags", "+genpts",
+        "-i", inputPath,
+        "-vn",
+        "-ac", "1",
+        "-ar", "16000",
+        "-c:a", "libmp3lame",
+        "-q:a", "2",
+        intermediatePath,
+      ];
+      await runFfmpeg(reencodeArgs);
+
+      const segmentArgs: string[] = [
+        "-hide_banner",
+        "-loglevel", "error",
+        "-i", intermediatePath,
+        "-f", "segment",
+        "-segment_time", String(segmentSeconds),
+        "-reset_timestamps", "1",
+        "-c", "copy",
+        pattern,
+      ];
+      await runFfmpeg(segmentArgs);
+    } catch (fallbackErr) {
+      // Provide clearer error including initial failure
+      const combinedMsg = `Primary segmentation failed: ${stderr}; Fallback re-encode failed: ${(fallbackErr as Error).message}`;
+      throw new Error(combinedMsg);
+    } finally {
+      // Cleanup intermediate file if created
+      try { if (fs.existsSync(intermediatePath)) fs.unlinkSync(intermediatePath); } catch {}
+    }
+  }
+
   const files = fs.readdirSync(outDir)
     .filter((f) => f.startsWith("chunk-") && f.endsWith(".mp3"))
     .sort();

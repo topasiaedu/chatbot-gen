@@ -158,6 +158,21 @@ export const createTranscriptionFile = async (
   return data as TranscriptionFile;
 };
 
+/**
+ * Deletes all transcription file records for a given task ID.
+ * This is used to clean up the database after successful transcription.
+ */
+export const deleteTranscriptionFilesByTaskId = async (taskId: string): Promise<void> => {
+  const { error } = await supabase
+    .from("transcription_files")
+    .delete()
+    .eq("transcription_task_id", taskId);
+
+  if (error) {
+    throw new Error(`Failed to delete transcription files for task ${taskId}: ${error.message}`);
+  }
+};
+
 export const linkTranscriptionsToConversation = async (
   conversationId: string,
   transcriptionIds: string[]

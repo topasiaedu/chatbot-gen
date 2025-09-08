@@ -6,7 +6,7 @@ import OpenAI from "openai";
 import supabase from "../db/supabaseClient";
 import logger from "./logger";
 import { uploadErrorReport, type TranscriptionPhase } from "./transcriptionDiagnostics";
-import { updateTranscriptionTask, fetchTranscriptionFilesByTaskId, deleteTranscriptionFilesByTaskId, fetchTranscriptionTask } from "../db/transcription";
+import { updateTranscriptionTask, fetchTranscriptionFilesByTaskId, deleteTranscriptionFilesByTaskId } from "../db/transcription";
 import { spawn } from "child_process";
 import ffmpegPath from "ffmpeg-static";
 
@@ -54,6 +54,65 @@ async function uploadResultText(bucket: string, taskId: string, text: string): P
   const { data: publicUrl } = supabase.storage.from(bucket).getPublicUrl(filePathInBucket);
   logger.info("Uploaded transcription result", { phase: "upload", url: publicUrl.publicUrl, taskId });
   return publicUrl.publicUrl;
+}
+
+/**
+ * Downloads all media chunk URLs to a temporary directory in a stable order.
+ */
+async function downloadAllChunks(mediaUrls: string[], outDir: string): Promise<string[]> {
+  fs.mkdirSync(outDir, { recursive: true });
+  const localPaths: string[] = [];
+  for (let i = 0; i < mediaUrls.length; i += 1) {
+    const url = mediaUrls[i];
+    const downloaded = await downloadToTempFile(url);
+    const ext = path.extname(downloaded) || ".m4a";
+    const ordered = path.join(outDir, `src-${String(i).padStart(3, "0")}${ext}`);
+    try { fs.renameSync(downloaded, ordered); } catch {
+      // Fallback to copy if rename across devices fails
+      fs.copyFileSync(downloaded, ordered);
+      try { fs.unlinkSync(downloaded); } catch {}
+    }
+    localPaths.push(ordered);
+  }
+  return localPaths;
+}
+
+/**
+ * Concatenates multiple media files into a single normalized MP3 (mono, 16kHz).
+ * Uses filter_complex concat with re-encode to ensure consistent format.
+ */
+async function concatenateMediaFiles(inputPaths: string[], outputPath: string): Promise<void> {
+  if (inputPaths.length === 1) {
+    // Single input: just transcode to normalized output
+    const args: string[] = [
+      "-hide_banner",
+      "-loglevel", "error",
+      "-i", inputPaths[0],
+      "-vn",
+      "-ac", "1",
+      "-ar", "16000",
+      "-c:a", "libmp3lame",
+      "-q:a", "2",
+      outputPath,
+    ];
+    await runFfmpeg(args);
+    return;
+  }
+
+  const args: string[] = ["-hide_banner", "-loglevel", "error"];
+  for (const p of inputPaths) {
+    args.push("-i", p);
+  }
+  args.push(
+    "-filter_complex", `concat=n=${inputPaths.length}:v=0:a=1`,
+    "-vn",
+    "-ac", "1",
+    "-ar", "16000",
+    "-c:a", "libmp3lame",
+    "-q:a", "2",
+    outputPath
+  );
+  await runFfmpeg(args);
 }
 
 /**
@@ -270,35 +329,118 @@ export async function transcribeMediaWithOpenAI(
 
   if (onProgress) await onProgress({ phase: "download_start" });
   
-  logger.info("Preparing to process file chunks", { 
-    taskId: opts.taskId, 
+  logger.info("Preparing to concatenate and segment", {
+    taskId: opts.taskId,
     chunkCount: opts.mediaUrls.length,
-    language: opts.language || "auto-detect"
+    language: opts.language || "auto-detect",
   });
-  
-  // Initialize or resume progress
-  let startAtChunkIndex = 0;
+
+  // Workspace for downloads and combined audio
+  const workRoot = path.join(os.tmpdir(), `merge-${opts.taskId}-${Date.now()}`);
+  const dlDir = path.join(workRoot, "dl");
+  const combinedPath = path.join(workRoot, "combined.mp3");
+  const chunksDir = path.join(workRoot, "chunks");
+  fs.mkdirSync(workRoot, { recursive: true });
+  fs.mkdirSync(chunksDir, { recursive: true });
+
+  let mergedText = "";
   try {
-    const task = await fetchTranscriptionTask(opts.taskId);
-    const p = (task as { progress?: string | null }).progress ?? null;
-    const match = typeof p === "string" ? p.match(/^(\d+)\/(\d+)\s+chunks$/) : null;
-    if (match) {
-      const completed = Number.parseInt(match[1], 10);
-      const total = Number.parseInt(match[2], 10);
-      if (Number.isFinite(completed) && Number.isFinite(total) && total === opts.mediaUrls.length) {
-        startAtChunkIndex = Math.min(Math.max(completed, 0), opts.mediaUrls.length);
+    // Download all chunk files locally in order
+    const localInputs = await downloadAllChunks(opts.mediaUrls, dlDir);
+    
+    if (onProgress) await onProgress({ phase: "download_done" });
+
+    // Concatenate and normalize to a single MP3
+    await concatenateMediaFiles(localInputs, combinedPath);
+
+    // Segment the combined audio into 60s chunks
+    const segmentSeconds: number = Number.parseInt(process.env.CHUNK_DURATION_SECONDS || "60", 10);
+    const segmentPaths = await splitMediaIntoChunks(combinedPath, chunksDir, segmentSeconds);
+    const totalSegments = segmentPaths.length;
+    if (totalSegments === 0) {
+      throw new Error("No segments produced from combined media");
+    }
+
+    // Initialize progress per segment
+    try {
+      await updateTranscriptionTask(opts.taskId, { status: "PROCESSING", progress: `0/${totalSegments} segments` });
+    } catch {}
+
+    // Concurrency-limited transcription of segments
+    const concurrency: number = Math.max(1, Number.parseInt(process.env.CHUNK_CONCURRENCY || "3", 10));
+    const results: string[] = new Array(totalSegments).fill("");
+    let completed = 0;
+
+    const withTimeout = async <T>(promise: Promise<T>, ms: number): Promise<T> => {
+      return new Promise<T>((resolve, reject) => {
+        const timeoutId = setTimeout(() => reject(new Error("TRANSCRIBE_TIMEOUT")), ms);
+        promise.then(
+          (value) => { clearTimeout(timeoutId); resolve(value); },
+          (err) => { clearTimeout(timeoutId); reject(err); }
+        );
+      });
+    };
+
+    let nextIndex = 0;
+    const worker = async (): Promise<void> => {
+      while (true) {
+        const i = nextIndex;
+        nextIndex += 1;
+        if (i >= totalSegments) return;
+        const segPath = segmentPaths[i];
+        logger.info("Transcribing segment", { taskId: opts.taskId, index: i + 1, total: totalSegments });
+        const fileStream = fs.createReadStream(segPath);
+
+        const transcriptionOptions: Record<string, unknown> = {
+          model: "whisper-1",
+          file: fileStream,
+          response_format: "text",
+          temperature: 0,
+        };
+        if (typeof opts.language === "string" && opts.language.trim().length > 0) {
+          transcriptionOptions.language = opts.language;
+        }
+
+        const transcription = await withTimeout(
+          client.audio.transcriptions.create(transcriptionOptions as any),
+          Number.parseInt(process.env.TRANSCRIBE_TIMEOUT_MS || "900000", 10)
+        );
+        const text = (typeof transcription === "string") ? transcription : (transcription as { text?: string }).text ?? "";
+        results[i] = text;
+        completed += 1;
+        const progressStr = `${completed}/${totalSegments} segments`;
+        try {
+          await updateTranscriptionTask(opts.taskId, { progress: progressStr, status: completed === totalSegments ? "PROCESSING:UPLOADING" : "PROCESSING:TRANSCRIBING" });
+        } catch {}
       }
+    };
+
+    const workers: Promise<void>[] = [];
+    for (let w = 0; w < Math.min(concurrency, totalSegments); w += 1) {
+      workers.push(worker());
     }
-    // If no prior progress, set initial
-    if (!match) {
-      await updateTranscriptionTask(opts.taskId, { status: "PROCESSING", progress: `0/${opts.mediaUrls.length} chunks` });
+    await Promise.all(workers);
+
+    mergedText = results.join("\n\n");
+    if (mergedText.trim().length === 0) {
+      throw new Error("Merged transcription is empty");
     }
-  } catch {}
-  
-  if (onProgress) await onProgress({ phase: "download_done" });
-  
-  // Process all chunks and get combined result
-  const mergedText = await processFileChunks(client, opts.mediaUrls, opts.taskId, opts.language, startAtChunkIndex, onProgress);
+  } finally {
+    // Cleanup local temp files regardless of success
+    try {
+      if (fs.existsSync(workRoot)) {
+        const entries = fs.readdirSync(workRoot);
+        for (const name of entries) {
+          const p = path.join(workRoot, name);
+          try {
+            if (fs.statSync(p).isDirectory()) fs.rmSync(p, { recursive: true, force: true });
+            else fs.unlinkSync(p);
+          } catch {}
+        }
+        try { fs.rmdirSync(workRoot); } catch {}
+      }
+    } catch {}
+  }
   
   if (mergedText.trim().length === 0) {
     throw new Error("Merged transcription is empty");

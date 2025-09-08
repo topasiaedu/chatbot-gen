@@ -14,6 +14,8 @@ export interface CompletionInfo {
   expected: number | null;
   received: number;
   complete: boolean;
+  presentIndices?: number[];
+  missingIndices?: number[];
 }
 
 export interface FfprobeAudioStreamInfo {
@@ -59,7 +61,7 @@ export function detectUploadCompletion(files: TranscriptionFile[]): CompletionIn
 
   if (expected === null) {
     // As last resort, if we have chunks but no expected figure, assume complete
-    return { expected: received, received, complete: received > 0 };
+    return { expected: received, received, complete: received > 0, presentIndices: [], missingIndices: [] };
   }
 
   // If chunk_index is available, ensure all indices from 0..expected-1 are present
@@ -70,12 +72,13 @@ export function detectUploadCompletion(files: TranscriptionFile[]): CompletionIn
     }
   }
   let hasAll = true;
+  const missing: number[] = [];
   for (let i = 0; i < expected; i += 1) {
-    if (!seen.has(i)) { hasAll = false; break; }
+    if (!seen.has(i)) { hasAll = false; missing.push(i); }
   }
 
   const complete: boolean = hasAll && received >= expected;
-  return { expected, received, complete };
+  return { expected, received, complete, presentIndices: Array.from(seen.values()).sort((a, b) => a - b), missingIndices: missing };
 }
 
 /**

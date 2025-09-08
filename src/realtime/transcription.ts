@@ -46,9 +46,9 @@ export function initTranscriptionRealtime(client: OpenAI, bucketName: string): (
             const completion = detectUploadCompletion(transcriptionFiles);
             if (!completion.complete) {
               try {
-                await updateTranscriptionTask(taskId, { status: "PENDING:WAITING_CHUNKS", progress: `${completion.received}/${completion.expected ?? "?"} chunks` });
+                await updateTranscriptionTask(taskId, { status: "PENDING:WAITING_CHUNKS", progress: `${completion.received}/${completion.expected ?? "?"} chunks; missing=[${(completion.missingIndices ?? []).join(",")}]` });
               } catch {}
-              logger.info("Upload not complete; deferring transcription", { taskId, received: completion.received, expected: completion.expected ?? 0 });
+              logger.info("Upload not complete; deferring transcription", { taskId, received: completion.received, expected: completion.expected ?? 0, presentIndices: (completion.presentIndices ?? []).join(","), missingIndices: (completion.missingIndices ?? []).join(",") });
               return;
             }
 
@@ -191,10 +191,10 @@ export function startTranscriptionPolling(
               const completion = detectUploadCompletion(transcriptionFiles);
               if (!completion.complete) {
                 try {
-                  await updateTranscriptionTask(task.id, { status: "PENDING:WAITING_CHUNKS", progress: `${completion.received}/${completion.expected ?? "?"} chunks` });
+                  await updateTranscriptionTask(task.id, { status: "PENDING:WAITING_CHUNKS", progress: `${completion.received}/${completion.expected ?? "?"} chunks; missing=[${(completion.missingIndices ?? []).join(",")}]` });
                 } catch {}
                 // eslint-disable-next-line no-console
-                console.log(`[polling] Deferring id=${task.id}: waiting chunks (${completion.received}/${completion.expected ?? "?"})`);
+                console.log(`[polling] Deferring id=${task.id}: waiting chunks (${completion.received}/${completion.expected ?? "?"}) missing=[${(completion.missingIndices ?? []).join(",")}]`);
                 await resetTranscriptionTaskProcessing(task.id, "PENDING");
                 continue;
               }

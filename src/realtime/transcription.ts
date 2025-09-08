@@ -3,6 +3,7 @@ import supabase from "../db/supabaseClient";
 import { TRANSCRIPTION_TABLE } from "../db/constants";
 import { fetchTranscriptionTask, updateTranscriptionTask, claimTranscriptionTaskForProcessing, resetTranscriptionTaskProcessing, fetchTranscriptionFilesByTaskId } from "../db/transcription";
 import { transcribeMediaWithOpenAI } from "../utils/transcription";
+import { assembleAndTranscribeM4a, detectUploadCompletion } from "../utils/chunkedUploads";
 import logger from "../utils/logger";
 import { uploadErrorReport } from "../utils/transcriptionDiagnostics";
 
@@ -41,6 +42,16 @@ export function initTranscriptionRealtime(client: OpenAI, bucketName: string): (
               return; // No media to process
             }
 
+            // Ensure we only process once all chunks are uploaded
+            const completion = detectUploadCompletion(transcriptionFiles);
+            if (!completion.complete) {
+              try {
+                await updateTranscriptionTask(taskId, { status: "PENDING:WAITING_CHUNKS", progress: `${completion.received}/${completion.expected ?? "?"} chunks` });
+              } catch {}
+              logger.info("Upload not complete; deferring transcription", { taskId, received: completion.received, expected: completion.expected ?? 0 });
+              return;
+            }
+
             // Attempt to claim to avoid duplicate workers
             const { claimed } = await claimTranscriptionTaskForProcessing(task.id, "realtime");
             if (!claimed) {
@@ -58,20 +69,22 @@ export function initTranscriptionRealtime(client: OpenAI, bucketName: string): (
                 logger.warn("Failed to set initial openai_task_id runId", { taskId });
               }
               // Prepare transcription options
-              const transcribeOptions = {
-                bucketName,
-                taskId: task.id,
-                mediaUrls: transcriptionFiles.map(f => f.media_url).filter(url => url !== null) as string[],
-                language: task.language // Pass language from database to Whisper
-              };
-              
-              logger.info("Starting transcription", { 
+              logger.info("Starting chunked m4a assembly + transcription", { 
                 taskId, 
                 chunkCount: transcriptionFiles.length,
                 language: task.language || "auto"
               });
-              
-              const { resultUrl, openaiTaskId } = await transcribeMediaWithOpenAI(client, transcribeOptions, async (p) => {
+
+              const { resultUrl } = await assembleAndTranscribeM4a(client, {
+                bucketName,
+                taskId: task.id,
+                files: transcriptionFiles,
+                language: task.language,
+              });
+
+              // Mirror progress updates for UI (best-effort)
+              await updateTranscriptionTask(task.id, { result_url: resultUrl, status: "COMPLETED" });
+              /* const { resultUrl, openaiTaskId } = await transcribeMediaWithOpenAI(client, transcribeOptions, async (p) => {
                 // Persist coarse progress into status column if available
                 try {
                   if (p.phase === "download_start") {
@@ -88,8 +101,7 @@ export function initTranscriptionRealtime(client: OpenAI, bucketName: string): (
                 } catch (e) {
                   // Best-effort; ignore if status column is missing
                 }
-              });
-              await updateTranscriptionTask(task.id, { result_url: resultUrl, openai_task_id: openaiTaskId ?? runId, status: "COMPLETED" });
+              }); */
               logger.info("Task updated with result_url", { taskId });
             } catch (err) {
               await resetTranscriptionTaskProcessing(task.id, "FAILED");
@@ -174,17 +186,26 @@ export function startTranscriptionPolling(
             try {
               // Fetch transcription files for this task
               const transcriptionFiles = await fetchTranscriptionFilesByTaskId(task.id);
-              
-              // Prepare transcription options
-              const transcribeOptions = {
+
+              // Only process when all chunks are present
+              const completion = detectUploadCompletion(transcriptionFiles);
+              if (!completion.complete) {
+                try {
+                  await updateTranscriptionTask(task.id, { status: "PENDING:WAITING_CHUNKS", progress: `${completion.received}/${completion.expected ?? "?"} chunks` });
+                } catch {}
+                // eslint-disable-next-line no-console
+                console.log(`[polling] Deferring id=${task.id}: waiting chunks (${completion.received}/${completion.expected ?? "?"})`);
+                await resetTranscriptionTaskProcessing(task.id, "PENDING");
+                continue;
+              }
+
+              const { resultUrl } = await assembleAndTranscribeM4a(client, {
                 bucketName,
                 taskId: task.id,
-                mediaUrls: transcriptionFiles.map(f => f.media_url).filter(url => url !== null) as string[],
-                language: task.language // Pass language from database to Whisper
-              };
-              
-              const { resultUrl, openaiTaskId } = await transcribeMediaWithOpenAI(client, transcribeOptions);
-              await updateTranscriptionTask(task.id, { result_url: resultUrl, status: "COMPLETED", openai_task_id: openaiTaskId ?? null });
+                files: transcriptionFiles,
+                language: task.language,
+              });
+              await updateTranscriptionTask(task.id, { result_url: resultUrl, status: "COMPLETED" });
             } catch (err) {
               await resetTranscriptionTaskProcessing(task.id, "FAILED");
               throw err;

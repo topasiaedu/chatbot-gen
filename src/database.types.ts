@@ -314,24 +314,27 @@ export type Database = {
       }
       transcription_files: {
         Row: {
-          chunk_count: string | null
+          chunk_index: number | null
           created_at: string
           id: string
           media_url: string | null
+          total_chunks: number | null
           transcription_task_id: string | null
         }
         Insert: {
-          chunk_count?: string | null
+          chunk_index?: number | null
           created_at?: string
           id?: string
           media_url?: string | null
+          total_chunks?: number | null
           transcription_task_id?: string | null
         }
         Update: {
-          chunk_count?: string | null
+          chunk_index?: number | null
           created_at?: string
           id?: string
           media_url?: string | null
+          total_chunks?: number | null
           transcription_task_id?: string | null
         }
         Relationships: [

@@ -36,22 +36,45 @@ export interface AssembleAndTranscribeOptions {
  */
 export function detectUploadCompletion(files: TranscriptionFile[]): CompletionInfo {
   const received: number = files.length;
+  // Prefer explicit total_chunks if present in rows
   let expected: number | null = null;
-
   for (const f of files) {
-    const raw: string | null = typeof f.chunk_count === "string" ? f.chunk_count : null;
-    if (raw && raw.trim().length > 0) {
-      const matches = raw.match(/(\d+)/g);
-      if (Array.isArray(matches) && matches.length > 0) {
-        const last = Number.parseInt(matches[matches.length - 1] ?? "", 10);
-        if (Number.isFinite(last) && last > 0) {
-          expected = Math.max(expected ?? 0, last);
-        }
-      }
+    if (typeof f.total_chunks === "number" && Number.isFinite(f.total_chunks) && f.total_chunks > 0) {
+      expected = Math.max(expected ?? 0, f.total_chunks);
     }
   }
 
-  const complete: boolean = expected !== null ? received >= expected : false;
+  if (expected === null) {
+    // If clients failed to set total_chunks, infer from max chunk_index + 1
+    let maxIndex = -1;
+    for (const f of files) {
+      if (typeof f.chunk_index === "number" && Number.isFinite(f.chunk_index)) {
+        maxIndex = Math.max(maxIndex, f.chunk_index);
+      }
+    }
+    if (maxIndex >= 0) {
+      expected = maxIndex + 1;
+    }
+  }
+
+  if (expected === null) {
+    // As last resort, if we have chunks but no expected figure, assume complete
+    return { expected: received, received, complete: received > 0 };
+  }
+
+  // If chunk_index is available, ensure all indices from 0..expected-1 are present
+  const seen = new Set<number>();
+  for (const f of files) {
+    if (typeof f.chunk_index === "number" && Number.isFinite(f.chunk_index)) {
+      seen.add(f.chunk_index);
+    }
+  }
+  let hasAll = true;
+  for (let i = 0; i < expected; i += 1) {
+    if (!seen.has(i)) { hasAll = false; break; }
+  }
+
+  const complete: boolean = hasAll && received >= expected;
   return { expected, received, complete };
 }
 
@@ -169,8 +192,11 @@ export async function assembleAndTranscribeM4a(
   await fsp.mkdir(workDir, { recursive: true });
 
   try {
-    // Sort files by created_at to preserve order
+    // Sort by chunk_index when present, else by created_at
     const filesSorted = [...opts.files].sort((a, b) => {
+      const ai = typeof a.chunk_index === "number" ? a.chunk_index : Number.POSITIVE_INFINITY;
+      const bi = typeof b.chunk_index === "number" ? b.chunk_index : Number.POSITIVE_INFINITY;
+      if (Number.isFinite(ai) && Number.isFinite(bi)) return ai - bi;
       const at = a.created_at ?? "";
       const bt = b.created_at ?? "";
       return at.localeCompare(bt);

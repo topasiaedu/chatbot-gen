@@ -132,7 +132,8 @@ export const fetchTranscriptionFilesByTaskId = async (taskId: string): Promise<T
     .from("transcription_files")
     .select("*")
     .eq("transcription_task_id", taskId)
-    .order("created_at", { ascending: true }); // Ensure consistent ordering for file chunks
+    .order("chunk_index", { ascending: true })
+    .order("created_at", { ascending: true }); // Fallback secondary order
 
   if (error) {
     throw new Error(`Failed to fetch transcription files for task ${taskId}: ${error.message}`);

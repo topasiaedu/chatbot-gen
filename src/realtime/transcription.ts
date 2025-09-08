@@ -1,7 +1,7 @@
 import OpenAI from "openai";
 import supabase from "../db/supabaseClient";
 import { TRANSCRIPTION_TABLE } from "../db/constants";
-import { fetchTranscriptionTask, updateTranscriptionTask, claimTranscriptionTaskForProcessing, resetTranscriptionTaskProcessing } from "../db/transcription";
+import { fetchTranscriptionTask, updateTranscriptionTask, claimTranscriptionTaskForProcessing, resetTranscriptionTaskProcessing, fetchTranscriptionFilesByTaskId } from "../db/transcription";
 import { transcribeMediaWithOpenAI } from "../utils/transcription";
 import logger from "../utils/logger";
 import { uploadErrorReport } from "../utils/transcriptionDiagnostics";
@@ -33,8 +33,11 @@ export function initTranscriptionRealtime(client: OpenAI, bucketName: string): (
               logger.info("Task already processed", { taskId });
               return; // Already processed
             }
-            if (!task.media_url) {
-              logger.warn("Task missing media_url", { taskId });
+            // Check for media files in the transcription_files table
+            const transcriptionFiles = await fetchTranscriptionFilesByTaskId(taskId);
+            
+            if (transcriptionFiles.length === 0) {
+              logger.warn("No transcription files found for task", { taskId });
               return; // No media to process
             }
 
@@ -54,11 +57,21 @@ export function initTranscriptionRealtime(client: OpenAI, bucketName: string): (
               } catch (e) {
                 logger.warn("Failed to set initial openai_task_id runId", { taskId });
               }
-              const { resultUrl, openaiTaskId } = await transcribeMediaWithOpenAI(client, {
+              // Prepare transcription options
+              const transcribeOptions = {
                 bucketName,
                 taskId: task.id,
-                mediaUrl: task.media_url,
-              }, async (p) => {
+                mediaUrls: transcriptionFiles.map(f => f.media_url).filter(url => url !== null) as string[],
+                language: task.language // Pass language from database to Whisper
+              };
+              
+              logger.info("Starting transcription", { 
+                taskId, 
+                chunkCount: transcriptionFiles.length,
+                language: task.language || "auto"
+              });
+              
+              const { resultUrl, openaiTaskId } = await transcribeMediaWithOpenAI(client, transcribeOptions, async (p) => {
                 // Persist coarse progress into status column if available
                 try {
                   if (p.phase === "download_start") {
@@ -112,7 +125,7 @@ export function initTranscriptionRealtime(client: OpenAI, bucketName: string): (
 
 /**
  * Polling fallback in case realtime events are missed.
- * This will periodically query for tasks with media_url set and result_url null, and process them.
+ * This will periodically query for tasks with media_url set or transcription files and result_url null, and process them.
  */
 export function startTranscriptionPolling(
   client: OpenAI,
@@ -130,15 +143,24 @@ export function startTranscriptionPolling(
         .from(TRANSCRIPTION_TABLE)
         .select("*")
         .or("result_url.is.null,result_url.eq.")
-        .not("media_url", "is", null)
         .limit(5);
       if (error) {
         // eslint-disable-next-line no-console
         console.error("Polling fetch error:", error.message);
       } else if (Array.isArray(data)) {
-        // eslint-disable-next-line no-console
-        console.log(`[polling] Found ${data.length} pending task(s).`);
+        // Filter tasks that have transcription files
+        const validTasks = [];
         for (const task of data) {
+          // Check if task has transcription files
+          const transcriptionFiles = await fetchTranscriptionFilesByTaskId(task.id);
+          if (transcriptionFiles.length > 0) {
+            validTasks.push(task);
+          }
+        }
+        
+        // eslint-disable-next-line no-console
+        console.log(`[polling] Found ${validTasks.length} pending task(s) with media.`);
+        for (const task of validTasks) {
           try {
             // Try to claim first to avoid duplicate work
             const { claimed } = await claimTranscriptionTaskForProcessing(task.id, "polling");
@@ -150,11 +172,18 @@ export function startTranscriptionPolling(
             // eslint-disable-next-line no-console
             console.log(`[polling] Processing task id=${task.id}`);
             try {
-              const { resultUrl, openaiTaskId } = await transcribeMediaWithOpenAI(client, {
+              // Fetch transcription files for this task
+              const transcriptionFiles = await fetchTranscriptionFilesByTaskId(task.id);
+              
+              // Prepare transcription options
+              const transcribeOptions = {
                 bucketName,
                 taskId: task.id,
-                mediaUrl: task.media_url,
-              });
+                mediaUrls: transcriptionFiles.map(f => f.media_url).filter(url => url !== null) as string[],
+                language: task.language // Pass language from database to Whisper
+              };
+              
+              const { resultUrl, openaiTaskId } = await transcribeMediaWithOpenAI(client, transcribeOptions);
               await updateTranscriptionTask(task.id, { result_url: resultUrl, status: "COMPLETED", openai_task_id: openaiTaskId ?? null });
             } catch (err) {
               await resetTranscriptionTaskProcessing(task.id, "FAILED");

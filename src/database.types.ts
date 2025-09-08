@@ -203,7 +203,7 @@ export type Database = {
           file_name: string | null
           folder_id: string | null
           id: string
-          media_url: string | null
+          language: string | null
           openai_task_id: string | null
           progress: string | null
           result_url: string | null
@@ -214,7 +214,7 @@ export type Database = {
           file_name?: string | null
           folder_id?: string | null
           id?: string
-          media_url?: string | null
+          language?: string | null
           openai_task_id?: string | null
           progress?: string | null
           result_url?: string | null
@@ -225,7 +225,7 @@ export type Database = {
           file_name?: string | null
           folder_id?: string | null
           id?: string
-          media_url?: string | null
+          language?: string | null
           openai_task_id?: string | null
           progress?: string | null
           result_url?: string | null
@@ -306,6 +306,35 @@ export type Database = {
           {
             foreignKeyName: "transcription_conversations_transcription_id_fkey"
             columns: ["transcription_id"]
+            isOneToOne: false
+            referencedRelation: "transciption_task"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
+      transcription_files: {
+        Row: {
+          created_at: string
+          id: string
+          media_url: string | null
+          transcription_task_id: string | null
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          media_url?: string | null
+          transcription_task_id?: string | null
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          media_url?: string | null
+          transcription_task_id?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "transcription_files_transcription_task_id_fkey"
+            columns: ["transcription_task_id"]
             isOneToOne: false
             referencedRelation: "transciption_task"
             referencedColumns: ["id"]

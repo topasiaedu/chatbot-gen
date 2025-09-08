@@ -10,6 +10,10 @@ export type TranscriptionConversation = Database["public"]["Tables"]["transcript
 export type TranscriptionConversationInsert = Database["public"]["Tables"]["transcription_conversations"]["Insert"];
 export type TranscriptionConversationUpdate = Database["public"]["Tables"]["transcription_conversations"]["Update"];
 
+export type TranscriptionFile = Database["public"]["Tables"]["transcription_files"]["Row"];
+export type TranscriptionFileInsert = Database["public"]["Tables"]["transcription_files"]["Insert"];
+export type TranscriptionFileUpdate = Database["public"]["Tables"]["transcription_files"]["Update"];
+
 export const fetchTranscriptionTask = async (taskId: string): Promise<TranscriptionTask> => {
   const { data, error } = await supabase
     .from(TRANSCRIPTION_TABLE)
@@ -118,6 +122,40 @@ export const resetTranscriptionTaskProcessing = async (
       throw new Error(`Failed to reset transcription task ${taskId}: ${fallback.error.message}`);
     }
   }
+};
+
+/**
+ * Fetches all transcription files associated with a transcription task
+ */
+export const fetchTranscriptionFilesByTaskId = async (taskId: string): Promise<TranscriptionFile[]> => {
+  const { data, error } = await supabase
+    .from("transcription_files")
+    .select("*")
+    .eq("transcription_task_id", taskId)
+    .order("created_at", { ascending: true }); // Ensure consistent ordering for file chunks
+
+  if (error) {
+    throw new Error(`Failed to fetch transcription files for task ${taskId}: ${error.message}`);
+  }
+  return (data || []) as TranscriptionFile[];
+};
+
+/**
+ * Creates a new transcription file record
+ */
+export const createTranscriptionFile = async (
+  file: TranscriptionFileInsert
+): Promise<TranscriptionFile> => {
+  const { data, error } = await supabase
+    .from("transcription_files")
+    .insert([file])
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to create transcription file: ${error.message}`);
+  }
+  return data as TranscriptionFile;
 };
 
 export const linkTranscriptionsToConversation = async (

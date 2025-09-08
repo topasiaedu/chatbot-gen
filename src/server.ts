@@ -20,7 +20,7 @@ import swaggerUi from "swagger-ui-express";
 import swaggerSpec from "./swagger";
 import { initTranscriptionRealtime, startTranscriptionPolling } from "./realtime/transcription";
 import { extractTextFromFileUrl } from "./utils/files";
-import { fetchTranscriptionTask } from "./db/transcription";
+import { fetchTranscriptionTask, fetchTranscriptionFilesByTaskId } from "./db/transcription";
 import supabase from "./db/supabaseClient";
 
 dotenv.config();
@@ -119,6 +119,9 @@ app.get("/transcriptions/:id", async (req, res) => {
   try {
     // Fetch the task row from DB
     const task = await fetchTranscriptionTask(taskId);
+    
+    // Fetch associated transcription files
+    const transcriptionFiles = await fetchTranscriptionFilesByTaskId(taskId);
 
     // Derive status if column is missing or null
     const derivedStatus: string = (() => {
@@ -148,7 +151,9 @@ app.get("/transcriptions/:id", async (req, res) => {
     res.json({
       id: task.id,
       status: derivedStatus,
-      mediaUrl: task.media_url,
+      language: task.language,
+      mediaUrls: transcriptionFiles.map(f => f.media_url).filter(url => url !== null), // File chunks for large files
+      chunkCount: transcriptionFiles.length,
       resultUrl: task.result_url,
       openaiTaskId: task.openai_task_id,
       errorReports,
